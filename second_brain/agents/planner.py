@@ -20,23 +20,36 @@ TEMPLATES = [
 def _hhmm(s: str, default: float = 21.0) -> float:
     try:
         h, m = str(s).split(":")
-        return int(h) + int(m) / 60
+        v = int(h) + int(m) / 60
+        return v if 0 <= int(h) <= 24 and 0 <= int(m) < 60 else default
     except (ValueError, TypeError):
         return default
 
 
-def constraints_state(profile: dict) -> dict:
-    c = profile.get("constraints", {}) or {}
-    need = float(c.get("sleep_min_hours", 7))
-    sleeps = [e["value"] for e in profile.get("health_log", []) if e.get("kind") == "sleep_hours"]
+def constraints_state(profile: dict, today: date | None = None) -> dict:
+    c = profile.get("constraints", {})
+    c = c if isinstance(c, dict) else {}
+    try:
+        need = float(c.get("sleep_min_hours", 7))
+    except (TypeError, ValueError):
+        need = 7.0
+    today = today or date.today()
+    recent = {today.isoformat(), (today - timedelta(days=1)).isoformat()}  # stale sleep logs must not lighten today's plan
+    sleeps = []
+    for e in profile.get("health_log", []):
+        try:
+            if e.get("kind") == "sleep_hours" and str(e.get("date", "")) in recent:
+                sleeps.append(float(e["value"]))
+        except (TypeError, ValueError, KeyError, AttributeError):
+            continue
     tired = bool(sleeps) and sleeps[-1] < need
     return {"latest_end": _hhmm(c.get("no_events_after", "21:00")), "tired": tired, "need": need}
 
 
 def blocks(goal: dict, profile: dict, day: date) -> list[dict]:
     st = constraints_state(profile)
-    topic = (profile.get("topics") or [goal["goal"][:30]])[0]
-    out = []
+    topic = str((profile.get("topics") or [goal["goal"][:30]])[0])
+    out, taken = [], []
     for tpl, hours, start_h in TEMPLATES:
         if st["tired"]:
             hours, start_h = min(hours, 1.0), max(start_h, 10)
@@ -44,6 +57,9 @@ def blocks(goal: dict, profile: dict, day: date) -> list[dict]:
             start_h = st["latest_end"] - hours
         if start_h < 6:
             continue
+        if any(start_h < e_end and start_h + hours > e_start for e_start, e_end in taken):  # no overlapping blocks
+            continue
+        taken.append((start_h, start_h + hours))
         start = datetime(day.year, day.month, day.day) + timedelta(hours=start_h)
         out.append({"title": tpl.format(t=topic, g=goal["goal"][:40]), "hours": hours, "start": start.isoformat(timespec="minutes")})
     return out
@@ -62,9 +78,9 @@ def run(session: dict, profile: dict, start_id: int, day: date | None = None) ->
     out = []
     for i, (b, s) in enumerate(ranked[:2]):
         others = [(x, y) for x, y in ranked if x is not b][:3]
-        alts = [{"title": f"{x['title']} @ {x['start'][11:16]}", "score": y, "detail": x["start"]} for x, y in others]
+        alts = [{"title": f"{x['title']} @ {x['start'][11:16]}", "score": y, "detail": x["start"], "item": {"text": x["title"], "hours": x["hours"], "start": x["start"], "date": x["start"][:10]}} for x, y in others]
         out.append(cardlib.make_card(
             start_id + i, "planner", f"{b['title']} {b['start'][:10]} {b['start'][11:16]} ({b['hours']:g}h)", s,
-            f"goal-aligned, ends before {int(st['latest_end'])}:00{note} [{backend}]", alts,
+            f"goal-aligned, ends before {int(st['latest_end']):02d}:{int(round(st['latest_end'] % 1 * 60)):02d}{note} [{backend}]", alts,
             {"text": b["title"], "hours": b["hours"], "kind": "calendar", "start": b["start"], "date": b["start"][:10]}))
     return out

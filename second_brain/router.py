@@ -54,7 +54,7 @@ def _openai(name: str):
 
     p = cfg()["providers"][name]
     if name == "flower":
-        return OpenAI(base_url=os.environ["FLWR_RUNTIME_BASE_URL"], api_key=os.environ["FLWR_RUNTIME_API_KEY"], max_retries=0)
+        return OpenAI(base_url=os.environ["FLWR_RUNTIME_BASE_URL"], api_key=os.environ["FLWR_RUNTIME_API_KEY"], max_retries=0, timeout=45)
     return OpenAI(base_url=p["base_url"], api_key=os.environ[p["key_env"]], max_retries=1, timeout=60)
 
 
@@ -77,17 +77,23 @@ def _call(name: str, messages: list[dict]) -> str:
 
 
 def _parse_json(text: str) -> Any:
-    text = text.strip()
+    """Strict JSON, fenced JSON, or the first JSON value embedded in prose."""
+    text = (text or "").strip()
     m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
     if m:
         text = m.group(1).strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        m = re.search(r"(\{.*\}|\[.*\])", text, re.S)
-        if not m:
-            raise
-        return json.loads(m.group(1))
+        pass
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(text):  # first decodable object/array (handles prose with stray braces)
+        if ch in "{[":
+            try:
+                return dec.raw_decode(text[i:])[0]
+            except json.JSONDecodeError:
+                continue
+    raise json.JSONDecodeError("no JSON found", text, 0)
 
 
 _TYPES = {"string": str, "number": (int, float), "integer": int, "boolean": bool, "array": list, "object": dict}
@@ -96,8 +102,13 @@ _TYPES = {"string": str, "number": (int, float), "integer": int, "boolean": bool
 def validate(obj: Any, schema: dict, path: str = "$") -> None:
     """Minimal JSON-schema subset: type, required, properties, items."""
     t = schema.get("type")
-    if t and not isinstance(obj, _TYPES[t]):
-        raise ValueError(f"{path}: expected {t}")
+    if t:
+        if t not in _TYPES:
+            raise ValueError(f"{path}: unsupported type {t}")
+        if not isinstance(obj, _TYPES[t]) or (t in ("number", "integer") and isinstance(obj, bool)):
+            raise ValueError(f"{path}: expected {t}")
+        if t == "number" and obj != obj:
+            raise ValueError(f"{path}: NaN")
     if t == "object":
         for k in schema.get("required", []):
             if k not in obj:
@@ -110,14 +121,17 @@ def validate(obj: Any, schema: dict, path: str = "$") -> None:
             validate(x, schema["items"], f"{path}[{i}]")
 
 
-def complete(task: str, messages: list[dict], json_schema: dict | None = None, default: Any = None) -> Any:
+_NODEFAULT = object()
+
+
+def complete(task: str, messages: list[dict], json_schema: dict | None = None, default: Any = _NODEFAULT) -> Any:
     """Route by task, fall back down the chain. JSON: validate, retry once, then `default`."""
     runtime.load_env()
     if json_schema:
         messages = messages + [
             {"role": "system", "content": "Reply with ONLY valid JSON matching this schema: " + json.dumps(json_schema)}
         ]
-    for name in cfg()["tasks"][task]:
+    for name in cfg()["tasks"].get(task, []):
         if not available(name):
             continue
         msgs = list(messages)
@@ -125,6 +139,8 @@ def complete(task: str, messages: list[dict], json_schema: dict | None = None, d
             t0 = time.time()
             try:
                 out = _call(name, msgs)
+                if not isinstance(out, str):
+                    raise RuntimeError("provider returned non-text")
                 res = out
                 if json_schema:
                     res = _parse_json(out)
@@ -137,7 +153,7 @@ def complete(task: str, messages: list[dict], json_schema: dict | None = None, d
             except Exception as e:  # noqa: BLE001 - provider/network errors: next provider
                 runtime.log({"task": task, "provider": name, "error": str(e)[:200], "attempt": attempt})
                 break
-    if default is not None:
+    if default is not _NODEFAULT:  # falsy defaults ({}, [], "") are valid; only "not passed" raises
         runtime.log({"task": task, "provider": "rule-based-default"})
         return default
     raise RouterError(f"no provider produced a result for task {task!r}")

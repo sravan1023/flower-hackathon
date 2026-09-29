@@ -22,17 +22,17 @@ rules:
   - Write files with the Write tool, not bash heredocs containing tricky quoting (bash heredoc broke once).
 
 architecture:
-  runtime.py: data_dir(), load_env(), mode() hub|local, log() -> data/run_log.jsonl, load/save_profile, save_state/load_state (context.state + file)
-  router.py: complete(task, messages, json_schema, default), embed(texts); providers flower(Responses API)/fireworks(chat)/claude(anthropic); config in second_brain/config/models.yaml
-  contrastive.py: score(goal, cands) -> (scores, backend); chain fireworks-nomic -> model2vec -> llm-judge -> keyword
-  connectors.py: research(agent, prompt, tool_names) bounded 3-round tool loop (UNTESTED against real runtime)
-  goal_engine.py: capture, context, decompose, discover_events, rank, change_plan, alignment, log_alignment
-  cards.py: make_card, render, parse_reply, has_decisions, apply (overrides -> profile.preferences)
-  agents/: events.py done; planner/health/content todo (thin: cards + briefs)
-  agent_app.py: handle() dispatch by intent(): set_goal | decide | events | recap | other; say() streams via agent.events.emit
-  session state keys: session = {goal, milestones, cards[], alignment_before, alignment_after, scorer}
-  card shape: {id, agent, title, score, why, detail, alternatives[{label,title,score,detail}], options, item{text,hours,kind,url?,date?}, status pending|approved|skipped|edit, chosen}
-  profile.json keys: communities, topics, constraints, activities[{text,hours,kind}], preferences{liked,skipped,picked_over}, health_log[]
+  runtime.py: "data_dir(), load_env(), mode() hub|local, log() -> data/run_log.jsonl, load/save_profile, save_state/load_state (context.state + file)"
+  router.py: "complete(task, messages, json_schema, default), embed(texts); providers flower(Responses API)/fireworks(chat)/claude(anthropic); config in second_brain/config/models.yaml"
+  contrastive.py: "score(goal, cands) -> (scores, backend); chain fireworks-nomic -> model2vec -> llm-judge -> keyword"
+  connectors.py: "research(agent, prompt, tool_names) bounded 3-round tool loop (UNTESTED against real runtime)"
+  goal_engine.py: "capture, context, decompose, discover_events, rank, change_plan, alignment, log_alignment"
+  cards.py: "make_card, render, parse_reply, has_decisions, apply (overrides -> profile.preferences)"
+  agents/: "events.py done; events, planner, health, content all done (thin: cards + briefs)"
+  agent_app.py: "handle() dispatch by intent(): set_goal | decide | events | recap | other; say() streams via agent.events.emit"
+  session state keys: "session = {goal, milestones, cards[], alignment_before, alignment_after, scorer}"
+  card shape: "{id, agent, title, score, why, detail, alternatives[{label,title,score,detail}], options, item{text,hours,kind,url?,date?}, status pending|approved|skipped|edit, chosen}"
+  profile.json keys: "communities, topics, constraints, activities[{text,hours,kind}], preferences{liked,skipped,picked_over}, health_log[]"
 
 decisions:
   - Moved config/ and seed/ into second_brain/ so they are importable/bundled with the package.
@@ -48,7 +48,7 @@ workstreams:
     owner: subagent A (sonnet)
     scope: second_brain/agents/{planner,health,content}.py, second_brain/executor/{__init__,base,briefs}.py, second_brain/ics.py, second_brain/recap.py, second_brain/agent_app.py wiring
     status: done (smoke_agents.py passes offline; flwr build OK)
-    files: [second_brain/agents/{planner,health,content}.py, second_brain/executor/{__init__,base,briefs}.py, second_brain/ics.py, second_brain/recap.py, second_brain/agent_app.py, scripts/smoke_agents.py]
+    files: "second_brain/agents/{planner,health,content}.py, second_brain/executor/{__init__,base,briefs}.py, second_brain/ics.py, second_brain/recap.py, second_brain/agent_app.py, scripts/smoke_agents.py"
     decisions:
       - "Intents: health (slept/workout), planner (plan tomorrow), content (recap event/photos/post), decide issues briefs for newly approved cards (session.briefs_issued) + appends recap; recap intent -> recap.py."
       - "Post cards keep full text in item.draft (pick of a photo alt overwrites item.text); briefs use draft + chosen photo."
@@ -66,6 +66,29 @@ workstreams:
     scope: README.md, DEMO.md, scripts/smoke.py extensions, scripts/check_bundle.py (verifies FAB contents/no secrets/size)
     status: done (README.md, DEMO.md, scripts/check_bundle.py); smoke.py extensions not done
     notes: "check_bundle exit 0 ok/1 fail/2 warnings-only; currently 2 (publisher placeholder). README/DEMO mark unfinished features as planned - update once A/B land."
+  D_runtime_audit:
+    owner: subagent D
+    scope: second_brain/{agent_app,connectors,runtime}.py, scripts/smoke_runtime.py
+    status: done (smoke_runtime passes; flwr build OK)
+    findings:
+      - "Likely hang: goal_engine.context() asked for slack+notion connectors; both require OAuth credentials; RuntimeAgentConnectors.call blocks on a child task up to 300s (_DEFAULT_TASK_REPLY_TIMEOUT) and nothing was emitted before the final say()."
+      - "Events shape OK (emit needs non-empty str 'type'; chat waits for response.completed) but we emitted nothing until the very end."
+      - "contrastive._model2vec: `with ThreadPoolExecutor` waits on exit, so the 40s result(timeout) does not actually bound a hung HF download (owner of contrastive.py must use ex.shutdown(wait=False))."
+    fixes: "main(): immediate 'Working on it...' delta, turn runs in daemon thread with 150s deadline + 20s heartbeats, exactly one response.completed (rich shape with output message), emit failures swallowed. connectors: skip credentialed connectors, per-call 40s thread timeout, 90s budget, function_call_output fed back as-is. runtime: all file IO failure-tolerant."
+    todo: [contrastive.py ThreadPoolExecutor shutdown(wait=False); scripts/smoke.py and smoke_agents.py assertions currently fail (cards.parse_reply / briefs; not D-owned)]
+
+  E_logic_bughunt:
+    owner: subagent E (bug hunter)
+    scope: goal_engine, cards, router, contrastive, ics, recap, agents/*, executor/*, scripts/smoke_edge.py
+    status: done (smoke_edge.py 125 checks, smoke/smoke_agents/smoke_local pass, flwr build OK)
+    fixed:
+      - "router: default sentinel (falsy defaults ok, omitted default raises), unknown task no KeyError, _parse_json scans for first decodable JSON (prose with stray braces), validate rejects bool-as-number/NaN/unknown type, non-text provider result handled."
+      - "contrastive: model2vec load timeout no longer blocks (ThreadPool `with` joined the hung thread) and failure cached; NaN/zero vectors -> 0; count/shape mismatch falls to next backend; judge prompt delimited + clamped."
+      - "cards: parse_reply handles 'skip all', 'approve 1 2 3', ranges, '#1', 'pick 2 because..' no longer picks b; apply only touches pending/edit cards (decided cards final), 'all' for skip/edit, prefs deduped + bounded; alternatives may carry item override so pick on planner/event cards keeps start/url (was: wrong .ics time)."
+      - "ics: aware datetimes -> UTC Z, hours NaN/<=0 clamped, URL/CR-LF header injection blocked, control chars stripped."
+      - "briefs: single-line fields (no forged Task:/STOP lines via card text), hostname sanitised, post text marked as data."
+      - "planner: stale sleep logs ignored (today/yesterday only), overlapping tired blocks removed, garbage constraints tolerated. health: 'slept for 6h', minutes/clock not hours, 'gym 1 hour', LLM-invented values dropped. content: no dangling '#', prompt inputs delimited. goal_engine: empty LLM output -> defaults, event URLs not in fetched text dropped, prompts delimited, hours garbage tolerated. recap: missing fields tolerated."
+    open_for_other_owners: "agent_app.py: decide with session lacking 'goal' (health cards before a goal) raises KeyError (caught by main, but reply is an error); new card ids use len(cards)+1 (use max id+1); intent 'decide' needs pending cards. flwr build writes .fab into repo root (gitignore?)."
 
 changelog:
   - "2026-09-29 e17374a scaffold pushed (Flower AgentApp at repo root, Hub-valid pyproject)."
@@ -74,3 +97,5 @@ changelog:
   - "2026-09-29 B_local_mode: aside executor, embed/recap service, hooks, lizzy, recap page, smoke_local.py added."
   - "2026-09-29 workstream A: planner/health/content agents, executor+briefs, ics, recap, agent_app wired, scripts/smoke_agents.py passes."
   - "2026-09-29 published v0.1.0 (lokilks). `flwr run . supergrid --stream` fails with code 44 (user prompt required); run-config agent.input does NOT supply it. Prompt is supplied via `flwr chat` (interactive) - live runtime test still TODO."
+  - "2026-09-29 D_runtime_audit: immediate working delta, turn deadline, connector auth-skip/timeouts, smoke_runtime.py."
+  - "2026-09-29 E_logic_bughunt: adversarial pass on router/contrastive/cards/ics/briefs/planner/health/content; scripts/smoke_edge.py added; ~25 bugs fixed."

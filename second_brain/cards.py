@@ -17,7 +17,7 @@ def make_card(cid: int, agent: str, title: str, score: float, reason: str, alter
         "score": round(score, 3),
         "why": f"score {score:.2f}: {reason}",
         "detail": detail,
-        "alternatives": [{"label": LETTERS[i], "title": a["title"], "score": round(a.get("score", 0), 3), "detail": a.get("detail", "")} for i, a in enumerate(alternatives[:3])],
+        "alternatives": [{"label": LETTERS[i], "title": a["title"], "score": round(a.get("score", 0), 3), "detail": a.get("detail", ""), **({"item": a["item"]} if a.get("item") else {})} for i, a in enumerate(alternatives[:3])],
         "options": ["approve", "edit", "skip"],
         "item": item or {"text": title, "hours": 2, "kind": "calendar"},
         "status": "pending",
@@ -35,16 +35,27 @@ def render(cards: list[dict]) -> str:
     return "\n".join(lines)
 
 
+_IDS = r"(?:all|#?\d+(?:\s*-\s*#?\d+)?)(?:(?:\s*,\s*|\s+and\s+|\s*&\s*|\s+)#?\d+(?:\s*-\s*#?\d+)?)*"
+
+
+def _expand(chunk: str) -> list[int]:
+    ids: list[int] = []
+    for a, b in re.findall(r"(\d+)(?:\s*-\s*#?(\d+))?", chunk):
+        lo, hi = int(a), int(b) if b else int(a)
+        ids += list(range(lo, min(hi, lo + 50) + 1)) if hi >= lo else [lo]
+    return ids
+
+
 def parse_reply(text: str) -> dict[str, Any]:
-    """'approve 1, 3, pick 2b, skip 4' -> {approve:[1,3], pick:{2:'b'}, skip:[4], edit:[]}."""
-    t = text.lower()
+    """'approve 1, 3, pick 2b, skip 4' -> {approve:[1,3], pick:{2:'b'}, skip:[4], edit:[]}. 'all' may appear in a list."""
+    t = (text or "").lower()
     out: dict[str, Any] = {"approve": [], "skip": [], "edit": [], "pick": {}}
-    for m in re.finditer(r"pick\s+(\d+)\s*([a-c])", t):
+    for m in re.finditer(r"\bpick\s+#?(\d+)\s*([a-c])\b", t):
         out["pick"][int(m.group(1))] = m.group(2)
-    t = re.sub(r"pick\s+\d+\s*[a-c]", " ", t)
-    for m in re.finditer(r"(approve|skip|edit)\s+((?:all|\d+)(?:\s*(?:,|and|&)\s*\d+)*)", t):
-        ids = "all" if m.group(2) == "all" else [int(x) for x in re.findall(r"\d+", m.group(2))]
-        out[m.group(1)] += [ids] if ids == "all" else ids
+    t = re.sub(r"\bpick\s+#?\d+\s*[a-c]\b", " ", t)
+    for m in re.finditer(rf"\b(approve|skip|edit)\s+({_IDS})", t):
+        chunk = m.group(2)
+        out[m.group(1)] += ["all"] if chunk.startswith("all") else _expand(chunk)
     return out
 
 
@@ -54,34 +65,52 @@ def has_decisions(text: str) -> bool:
 
 
 def apply(cards: list[dict], decisions: dict, profile: dict) -> list[dict]:
-    """Update card statuses; store overrides in profile.preferences to feed the next ranking."""
-    prefs = profile.setdefault("preferences", {"liked": [], "skipped": [], "picked_over": []})
+    """Update card statuses; store overrides in profile.preferences to feed the next ranking.
+
+    Only pending/edit cards can change: an approved (brief may be issued) or skipped card is final.
+    Unknown ids are ignored.
+    """
+    prefs = profile.get("preferences")
+    if not isinstance(prefs, dict):
+        prefs = profile["preferences"] = {}
     for k in ("liked", "skipped", "picked_over"):
         prefs.setdefault(k, [])
-    by_id = {c["id"]: c for c in cards}
-    pending = [c["id"] for c in cards if c["status"] == "pending"]
-    for cid in decisions["approve"]:
-        for i in (pending if cid == "all" else [cid]):
-            c = by_id.get(i)
-            if c and c["status"] == "pending":
-                c["status"] = "approved"
-                prefs["liked"].append(c["title"])
-    for cid in decisions["edit"]:
-        if cid in by_id:
-            by_id[cid]["status"] = "edit"  # user supplies replacement text next turn
-    for cid in decisions["skip"]:
-        c = by_id.get(cid)
-        if c:
+    open_ = {c["id"]: c for c in cards if c["status"] in ("pending", "edit")}
+
+    def targets(ids: list) -> list[int]:
+        out: list[int] = []
+        for i in ids:
+            out += sorted(open_) if i == "all" else [i]
+        return out
+
+    def remember(key: str, val: Any) -> None:
+        if val in prefs[key]:
+            prefs[key].remove(val)
+        prefs[key].append(val)
+
+    for i in targets(decisions.get("approve", [])):
+        c = open_.get(i)
+        if c and c["status"] == "pending":
+            c["status"] = "approved"
+            remember("liked", c["title"])
+    for i in targets(decisions.get("edit", [])):
+        c = open_.get(i)
+        if c and c["status"] == "pending":
+            c["status"] = "edit"  # user supplies replacement text next turn
+    for i in targets(decisions.get("skip", [])):
+        c = open_.get(i)
+        if c and c["status"] in ("pending", "edit"):
             c["status"] = "skipped"
-            prefs["skipped"].append(c["title"])
-    for cid, letter in decisions["pick"].items():
-        c = by_id.get(cid)
+            remember("skipped", c["title"])
+    for cid, letter in decisions.get("pick", {}).items():
+        c = open_.get(cid)
         alt = next((a for a in (c or {}).get("alternatives", []) if a["label"] == letter), None)
-        if c and alt:
+        if c and alt and c["status"] in ("pending", "edit"):
             c["status"] = "approved"
             c["chosen"] = alt["title"]
-            c["item"] = {**c["item"], "text": alt["title"]}
-            prefs["picked_over"].append({"picked": alt["title"], "over": c["title"]})
+            c["item"] = {**c["item"], **(alt.get("item") or {"text": alt["title"]})}
+            remember("picked_over", {"picked": alt["title"], "over": c["title"]})
     for k in prefs:
-        prefs[k] = prefs[k][-30:]
+        if isinstance(prefs[k], list):
+            prefs[k] = prefs[k][-30:]
     return cards

@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 
 def _esc(s: str) -> str:
-    return str(s).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\r", "").replace("\n", "\\n")
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", str(s)).replace("\r\n", "\n").replace("\r", "\n")
+    return s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
 
 
 def _fold(line: str) -> list[str]:
@@ -34,8 +35,17 @@ def _dt(iso: str) -> datetime:
 
 
 def make_ics(title: str, start_iso: str, hours: float, description: str = "", url: str = "") -> str:
-    start = _dt(start_iso).replace(tzinfo=None)
-    end = start + timedelta(hours=max(float(hours), 0.25))
+    parsed = _dt(start_iso)
+    try:
+        h = float(hours)
+        h = h if h == h and h != float("inf") else 1.0
+    except (TypeError, ValueError):
+        h = 1.0
+    h = min(max(h, 0.25), 24 * 7)
+    aware = parsed.tzinfo is not None
+    start = parsed.astimezone(timezone.utc).replace(tzinfo=None) if aware else parsed  # aware -> UTC 'Z'; naive -> floating local
+    z = "Z" if aware else ""
+    end = start + timedelta(hours=h)
     uid = hashlib.sha1(f"{title}|{start_iso}".encode()).hexdigest()[:20] + "@second-brain"
     fmt = "%Y%m%dT%H%M%S"
     lines = [
@@ -46,13 +56,13 @@ def make_ics(title: str, start_iso: str, hours: float, description: str = "", ur
         "BEGIN:VEVENT",
         f"UID:{uid}",
         f"DTSTAMP:{datetime.now(timezone.utc).strftime(fmt)}Z",
-        f"DTSTART:{start.strftime(fmt)}",
-        f"DTEND:{end.strftime(fmt)}",
+        f"DTSTART:{start.strftime(fmt)}{z}",
+        f"DTEND:{end.strftime(fmt)}{z}",
         f"SUMMARY:{_esc(title)}",
     ]
     if description:
         lines.append(f"DESCRIPTION:{_esc(description)}")
-    if url and re.match(r"https?://", url):
+    if url and re.fullmatch(r"https?://[^\s\x00-\x1f\x7f]+", str(url)):
         lines.append(f"URL:{url}")
     lines += ["END:VEVENT", "END:VCALENDAR"]
     out: list[str] = []

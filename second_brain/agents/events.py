@@ -18,7 +18,7 @@ def run(agent: Any, session: dict, profile: dict, start_id: int) -> list[dict]:
     out = []
     for i, (e, s) in enumerate(top):
         others = [(x, y) for x, y in ranked if x is not e][:3]
-        alts = [{"title": f"{x['title']} ({x['date']})", "score": y, "detail": x.get("url", "")} for x, y in others]
+        alts = [{"title": f"{x['title']} ({x['date']})", "score": y, "detail": x.get("url", ""), "item": {"text": f"{x['title']}. {x.get('summary', '')}", "url": x.get("url", ""), "date": x["date"]}} for x, y in others]
         out.append(cardlib.make_card(
             start_id + i, "events", f"{e['title']} ({e['date']})", s, f"{e.get('summary', '')[:80]} [{backend}]", alts,
             {"text": f"{e['title']}. {e.get('summary', '')}", "hours": 3, "kind": "rsvp", "url": e.get("url", ""), "date": e["date"]},
