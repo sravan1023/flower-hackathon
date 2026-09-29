@@ -8,7 +8,7 @@ project:
   repo: https://github.com/sravan1023/flower-hackathon (branch main; teammates pull from it)
   spec: SECOND_BRAIN_PLAN.md (condensed) - full original prompt lives in the team lead's message; key rules are below.
   package: second_brain/   # NOT top-level config/seed; they live in second_brain/config and second_brain/seed
-  publisher: CHANGE_ME_FLOWER_USERNAME   # in pyproject.toml; needed before publish (ask the user)
+  publisher: lokilks   # set in pyproject.toml (user-provided)
   version: 0.1.0 (unpublished)
 
 rules:
@@ -47,19 +47,29 @@ workstreams:
   A_agents_briefs_recap:
     owner: subagent A (sonnet)
     scope: second_brain/agents/{planner,health,content}.py, second_brain/executor/{__init__,base,briefs}.py, second_brain/ics.py, second_brain/recap.py, second_brain/agent_app.py wiring
-    status: pending
+    status: done (smoke_agents.py passes offline; flwr build OK)
+    files: [second_brain/agents/{planner,health,content}.py, second_brain/executor/{__init__,base,briefs}.py, second_brain/ics.py, second_brain/recap.py, second_brain/agent_app.py, scripts/smoke_agents.py]
+    decisions:
+      - "Intents: health (slept/workout), planner (plan tomorrow), content (recap event/photos/post), decide issues briefs for newly approved cards (session.briefs_issued) + appends recap; recap intent -> recap.py."
+      - "Post cards keep full text in item.draft (pick of a photo alt overwrites item.text); briefs use draft + chosen photo."
+      - "briefs.brief_for raises NotApproved unless status==approved; .ics via ics.make_ics into data_dir()/ics; executor.base.run returns brief_only in hub, optionally delegates to executor.aside.run in local mode (guarded import)."
+      - "session.started (ts) added in set_goal; recap filters run_log by it. health task routes flower only; never claude."
+    todo: [test against real flower runtime, sleep-aware wake window in planner, real photo files for content]
     notes: ""
   B_local_mode:
     owner: subagent B (sonnet)
     scope: second_brain/executor/aside.py, second_brain/local/{embed_service,lizzy,clip}.py, second_brain/recap_page/index.html (served by embed service), router/contrastive local hooks ONLY via new files + small guarded imports
-    status: pending
-    notes: ""
+    status: done (smoke_local passes; flwr build + smoke.py pass)
+    notes: "executor/aside.py (injectable runner), local/{embed_service,hooks,lizzy}.py, recap_page/index.html, contrastive bge-local hook when mode()==local. Stubbed/untested live: real aside CLI, real bge/CLIP model runs, lizzy is health-only, no clip.py (CLIP lives in embed_service), no embedding map."
   C_docs_ci:
     owner: subagent C (sonnet)
     scope: README.md, DEMO.md, scripts/smoke.py extensions, scripts/check_bundle.py (verifies FAB contents/no secrets/size)
-    status: pending
-    notes: ""
+    status: done (README.md, DEMO.md, scripts/check_bundle.py); smoke.py extensions not done
+    notes: "check_bundle exit 0 ok/1 fail/2 warnings-only; currently 2 (publisher placeholder). README/DEMO mark unfinished features as planned - update once A/B land."
 
 changelog:
   - "2026-09-29 e17374a scaffold pushed (Flower AgentApp at repo root, Hub-valid pyproject)."
   - "2026-09-29 engine block written: runtime/router/contrastive/connectors/goal_engine/cards/events agent/agent_app/smoke. Offline smoke OK (model2vec scorer)."
+  - "2026-09-29 workstream C: README.md, DEMO.md, scripts/check_bundle.py added."
+  - "2026-09-29 B_local_mode: aside executor, embed/recap service, hooks, lizzy, recap page, smoke_local.py added."
+  - "2026-09-29 workstream A: planner/health/content agents, executor+briefs, ics, recap, agent_app wired, scripts/smoke_agents.py passes."

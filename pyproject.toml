@@ -26,7 +26,7 @@ local = ["sentence-transformers>=3.0", "open_clip_torch>=2.24", "fastapi>=0.110"
 packages = ["second_brain"]
 
 [tool.flwr.app]
-publisher = "CHANGE_ME_FLOWER_USERNAME"
+publisher = "lokilks"
 display-name = "Second Brain"
 fab-format-version = 1
 flwr-version-target = "1.38.0"

@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from flwr.agentapp import AgentApp, AgentSession
 from flwr.app import Context
 
 from . import cards as cardlib
-from . import goal_engine, router, runtime
+from . import goal_engine, recap as recaplib, router, runtime
+from .agents import content as content_agent
 from .agents import events as events_agent
+from .agents import health as health_agent
+from .agents import planner as planner_agent
+from .executor import base as executor_base
+from .executor import briefs as briefslib
 
 app = AgentApp()
 
@@ -28,6 +34,14 @@ def intent(text: str, session: dict) -> str:
     t = text.lower()
     if cardlib.has_decisions(t) and any(c["status"] == "pending" for c in session.get("cards", [])):
         return "decide"
+    if re.match(r"\s*(my )?goal\b|\s*i want to\b", t):
+        return "set_goal"
+    if re.search(r"\bslept\b|\bsleep\b|\bworked out\b|\bworkout\b", t):
+        return "health"
+    if re.search(r"plan (my )?(tomorrow|day|week)|\bplanner\b|\bcalendar block", t):
+        return "planner"
+    if re.search(r"recap event|\bphotos?\b|\bwrite (a )?post\b|^\s*post\b", t):
+        return "content"
     if re.search(r"\bgoal\b|\bi want to\b|\bland\b", t) or not session.get("goal"):
         return "set_goal"
     if re.search(r"\bevents?\b|\bmeetups?\b|\bfind\b", t):
@@ -64,7 +78,7 @@ def handle(agent: AgentSession, context: Context, text: str) -> str:
         cards, backend = goal_engine.change_plan(goal, miles, profile)
         before, be = goal_engine.alignment(goal["goal"], profile.get("activities", []))
         goal_engine.log_alignment("before", before, be)
-        session = {"goal": goal, "milestones": miles, "cards": cards, "alignment_before": before, "scorer": backend}
+        session = {"started": time.time(), "goal": goal, "milestones": miles, "cards": cards, "alignment_before": before, "scorer": backend}
         out = [f"**Goal:** {goal['goal']} (by {goal['deadline']}) - why: {goal['why'] or 'n/a'}", "", "**Milestones**"]
         out += [f"- {m['title']} (by {m['by']}): {m['weekly']}" for m in miles]
         out += ["", f"Alignment of your current routine with this goal: **{before}** (scorer: {backend})", "", cardlib.render(cards)]
@@ -75,13 +89,41 @@ def handle(agent: AgentSession, context: Context, text: str) -> str:
         after, be = goal_engine.alignment(session["goal"]["goal"], _activities(profile, session["cards"]))
         session["alignment_after"] = after
         goal_engine.log_alignment("after", after, be)
-        reply = "Recorded your decisions.\n\n" + _summary(session, profile) + "\n\n(Briefs for approved cards: coming in the next build.)"
+        reply = "Recorded your decisions.\n\n" + _summary(session, profile)
+        issued = briefslib.issue(session)
+        for b in issued:
+            executor_base.run(b)  # hub: hands the brief back; never submits
+        if issued:
+            reply += "\n\n**Action briefs** (paste into your browser agent; each stops before the final step)\n\n" + "\n\n".join(b["text"] for b in issued)
+        else:
+            reply += "\n\n(No approved cards, so no briefs.)"
+        reply += "\n\n" + recaplib.build(session, profile)
+    elif kind == "health":
+        session.setdefault("cards", [])
+        entries, new = health_agent.run(text, profile, len(session["cards"]) + 1)
+        runtime.save_profile(profile)
+        session["cards"] += new
+        logged = ", ".join(f"{e['kind']}={e['value']:g}" for e in entries) or "nothing I could parse"
+        reply = f"Logged: {logged}."
+        if new:
+            reply += "\n\n" + cardlib.render(new)
+    elif kind in ("planner", "content"):
+        if not session.get("goal"):
+            reply = "Tell me your goal first (e.g. 'My goal: land an AI security role by December')."
+        elif kind == "planner":
+            new = planner_agent.run(session, profile, len(session["cards"]) + 1)
+            session["cards"] += new
+            reply = ("Goal-aligned calendar blocks:\n\n" + cardlib.render(new)) if new else "No block fits your constraints tomorrow."
+        else:
+            new = content_agent.run(agent, session, profile, len(session["cards"]) + 1, text)
+            session["cards"] += new
+            reply = "Post drafts (with photo picks):\n\n" + cardlib.render(new)
     elif kind == "events":
         new = events_agent.run(agent, session, profile, start_id=len(session["cards"]) + 1)
         session["cards"] += new
         reply = "Ranked events for your goal:\n\n" + cardlib.render(new)
     elif kind == "recap":
-        reply = _summary(session, profile)
+        reply = recaplib.build(session, profile)
     else:
         reply = "Tell me your goal (e.g. 'My goal: land an AI security role by December'), or reply to the cards with `approve 1, 3, pick 2b, skip 4`."
     runtime.save_state(context, "session", session)

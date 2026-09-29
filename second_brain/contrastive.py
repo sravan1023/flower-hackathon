@@ -22,6 +22,15 @@ def _fireworks(goal: str, cands: list[str]) -> list[float]:
     return _cos(v[0], v[1:])
 
 
+def _bge_local(goal: str, cands: list[str]) -> list[float]:
+    from .local import hooks
+
+    v = hooks.local_embed([goal] + cands)
+    if v is None:
+        raise RuntimeError("local embed unavailable")
+    return _cos(v[0], v[1:])
+
+
 def _model2vec(goal: str, cands: list[str]) -> list[float]:
     global _M2V
     if _M2V is None:
@@ -47,7 +56,10 @@ def score(goal_text: str, candidates: list[str]) -> tuple[list[float], str]:
     """Returns (scores, backend_name). Never raises; last resort is keyword overlap."""
     if not candidates:
         return [], "none"
-    for name, fn in (("fireworks-nomic", _fireworks), ("model2vec", _model2vec), ("llm-judge", _judge)):
+    chain = [("fireworks-nomic", _fireworks), ("model2vec", _model2vec), ("llm-judge", _judge)]
+    if runtime.mode() == "local":
+        chain.insert(0, ("bge-local", _bge_local))
+    for name, fn in chain:
         try:
             res = fn(goal_text, candidates)
             runtime.log({"task": "score", "backend": name, "n": len(candidates)})
