@@ -1,0 +1,14 @@
+{
+  "name": "",
+  "communities": ["AI security meetup", "OWASP chapter", "Local ML reading group"],
+  "topics": ["LLM security", "red teaming", "prompt injection"],
+  "constraints": {"sleep_min_hours": 7, "no_events_after": "21:00"},
+  "activities": [
+    {"text": "Binge-watching TV series", "hours": 6, "kind": "calendar"},
+    {"text": "Reading a Kubernetes networking blog", "hours": 2, "kind": "calendar"},
+    {"text": "Attended a general startup mixer", "hours": 3, "kind": "rsvp"},
+    {"text": "Posted about weekend hiking", "hours": 1, "kind": "post"}
+  ],
+  "preferences": {},
+  "health_log": []
+}

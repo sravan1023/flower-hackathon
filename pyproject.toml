@@ -30,7 +30,7 @@ publisher = "CHANGE_ME_FLOWER_USERNAME"
 display-name = "Second Brain"
 fab-format-version = 1
 flwr-version-target = "1.38.0"
-fab-include = ["second_brain/**/*.py", "config/*.yaml", "seed/*.json", "LICENSE", "README.md"]
+fab-include = ["second_brain/**/*.py", "second_brain/config/*.yaml", "second_brain/seed/*.json", "LICENSE", "README.md"]
 
 [tool.flwr.app.components]
 agentapp = "second_brain.agent_app:app"
