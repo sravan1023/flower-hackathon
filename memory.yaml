@@ -9,7 +9,7 @@ project:
   spec: SECOND_BRAIN_PLAN.md (condensed) - full original prompt lives in the team lead's message; key rules are below.
   package: second_brain/   # NOT top-level config/seed; they live in second_brain/config and second_brain/seed
   publisher: lokilks   # set in pyproject.toml (user-provided)
-  version: 0.1.0 (unpublished)
+  version: 0.1.0 PUBLISHED to Flower Hub as @lokilks/second-brain (2026-09-29). Bump [project].version for every republish.
 
 rules:
   - User makes every final call; no side effect without an approved card.
@@ -73,3 +73,4 @@ changelog:
   - "2026-09-29 workstream C: README.md, DEMO.md, scripts/check_bundle.py added."
   - "2026-09-29 B_local_mode: aside executor, embed/recap service, hooks, lizzy, recap page, smoke_local.py added."
   - "2026-09-29 workstream A: planner/health/content agents, executor+briefs, ics, recap, agent_app wired, scripts/smoke_agents.py passes."
+  - "2026-09-29 published v0.1.0 (lokilks). `flwr run . supergrid --stream` fails with code 44 (user prompt required); run-config agent.input does NOT supply it. Prompt is supplied via `flwr chat` (interactive) - live runtime test still TODO."
