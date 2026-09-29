@@ -1,0 +1,10 @@
+providers:
+  flower: {kind: openai, base_url_env: FLWR_RUNTIME_BASE_URL, key_env: FLWR_RUNTIME_API_KEY, model: "openai/gpt-5.6-sol"}
+  fireworks: {kind: openai, base_url: "https://api.fireworks.ai/inference/v1", key_env: FIREWORKS_API_KEY, model: "accounts/fireworks/models/llama-v3p3-70b-instruct", embed_model: "nomic-ai/nomic-embed-text-v1.5"}
+  claude: {kind: anthropic, key_env: ANTHROPIC_API_KEY, model: "claude-sonnet-4-5"}
+tasks:
+  extract: [flower, fireworks]
+  plan: [fireworks, flower]
+  health: [flower]
+  rank_explain: [flower, fireworks]
+  write: [claude, fireworks, flower]

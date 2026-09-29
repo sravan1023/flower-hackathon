@@ -1,3 +1,3 @@
-# flower-hackathon
+# Second Brain (Flower AgentApp)
 
-Rishi
+Goal in, decision cards out, you make the final call. Full README lands with v0.1.0.
