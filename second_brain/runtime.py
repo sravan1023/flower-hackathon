@@ -56,6 +56,10 @@ def mode() -> str:
 
 
 def log(event: dict[str, Any]) -> None:
+    if "error" in event:
+        print(f"[err] {json.dumps(event)[:400]}", flush=True)  # visible in `flwr log`
+    elif "latency" in event:
+        print(f"[ok] {json.dumps(event)[:200]}", flush=True)
     try:
         with (data_dir() / "run_log.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": time.time(), **event}) + "\n")

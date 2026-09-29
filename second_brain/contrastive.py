@@ -79,11 +79,32 @@ def _judge(goal: str, cands: list[str]) -> list[float]:
     return s
 
 
+def _ngram(goal: str, cands: list[str]) -> list[float]:
+    """No-download fallback: hashed char 3-5-gram + word TF vectors, cosine. Works offline on SuperGrid."""
+    import re
+    import zlib
+
+    dim = 4096
+
+    def vec(text: str) -> np.ndarray:
+        t = " " + re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip() + " "
+        v = np.zeros(dim)
+        for w in t.split():
+            v[zlib.crc32(("w:" + w).encode()) % dim] += 2.0
+        for n in (3, 4, 5):
+            for i in range(len(t) - n + 1):
+                v[zlib.crc32(t[i : i + n].encode()) % dim] += 1.0
+        return v
+
+    vs = [vec(x) for x in [goal] + list(cands)]
+    return _cos(vs[0], vs[1:])
+
+
 def score(goal_text: str, candidates: list[str]) -> tuple[list[float], str]:
     """Returns (scores, backend_name). Never raises; last resort is keyword overlap."""
     if not candidates:
         return [], "none"
-    chain = [("fireworks-nomic", _fireworks), ("model2vec", _model2vec), ("llm-judge", _judge)]
+    chain = [("fireworks-nomic", _fireworks), ("model2vec", _model2vec), ("llm-judge", _judge), ("ngram-hash", _ngram)]
     if runtime.mode() == "local":
         chain.insert(0, ("bge-local", _bge_local))
     for name, fn in chain:

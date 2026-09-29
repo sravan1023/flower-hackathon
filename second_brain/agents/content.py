@@ -13,7 +13,7 @@ def parse_input(text: str) -> tuple[str, list[str]]:
     """'recap event: <text> photos: a; b; c' -> (recap, [photo descriptions])."""
     m = re.search(r"\bphotos?\s*[:\-]", text, re.I)
     recap, photos = (text[: m.start()], text[m.end():]) if m else (text, "")
-    recap = re.sub(r"^\s*(recap event|post)\s*[:\-]?\s*", "", recap, flags=re.I).strip()
+    recap = re.sub(r"^\s*(?:write (?:a )?post|recap event|post)\s*(?:about|on|for)?\s*[:\-]?\s*", "", recap, flags=re.I).strip()
     return recap[:1500], [p.strip() for p in re.split(r"[;\n]", photos) if p.strip()][:10]
 
 

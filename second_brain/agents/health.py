@@ -69,7 +69,7 @@ def run(text: str, profile: dict, start_id: int) -> tuple[list[dict], list[dict]
     log = profile.setdefault("health_log", [])
     now = time.strftime("%Y-%m-%d")
     for e in entries:
-        log.append({"date": now, **e})
+        log.append({"date": now, "typed": text[:200], **e})  # only what the user typed + parsed hours
     del log[:-60]
     cards: list[dict] = []
     c = profile.get("constraints", {})
@@ -80,5 +80,6 @@ def run(text: str, profile: dict, start_id: int) -> tuple[list[dict], list[dict]
     sleep = next((e["value"] for e in entries if e["kind"] == "sleep_hours"), None)
     if sleep is not None and sleep < need:
         alts = [{"title": "Short walk plus a 20 minute nap, keep only one 1h focus block", "score": 0.5}, {"title": "Move deep work to tomorrow, do admin only", "score": 0.4}, {"title": "Keep the normal plan", "score": 0.1}]
-        cards.append(cardlib.make_card(start_id, "health", f"Lighter day: you slept {sleep:g}h (target {need:g}h)", 0.7, "sleep below your own minimum", alts, {"text": f"Lighter routine after {sleep:g}h sleep: cap deep work at 1.5h, light walk, early night", "hours": 1.5, "kind": "routine"}))
+        plan = f"Lighter plan for tomorrow after {sleep:g}h sleep: shorter 45 minute focus blocks, no events after 6pm, a 20 minute nap and wind-down block, early night"
+        cards.append(cardlib.make_card(start_id, "health", f"Lighter plan tomorrow: you slept {sleep:g}h (target {need:g}h)", 0.7, "sleep below your own minimum", alts, {"text": plan, "hours": 1.5, "kind": "routine"}, detail=plan))
     return entries, cards

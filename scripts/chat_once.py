@@ -1,7 +1,7 @@
 """Scripted `flwr chat`: send one or more prompts to the published app in ONE run series and print the replies.
 
 Usage: PYTHONUTF8=1 uv run python scripts/chat_once.py "My goal: ..." "approve 1, 3" ...
-Env: APP=@lokilks/second-brain  FLWR_CHAT_SUPERLINK (default: supergrid)
+Env: FAB=path/to/local.fab (run local build on SuperGrid)  APP=@lokilks/second-brain  FLWR_CHAT_SUPERLINK (default: supergrid)
 Needs `uv run flwr login supergrid` first. Dev tool only; not part of the FAB.
 """
 
@@ -26,8 +26,9 @@ def main() -> None:
             feds = list(stub.ListFederations(ListFederationsRequest()).federations)
         federation = conn.federation or (feds[0].id if feds and hasattr(feds[0], "id") else None)
         series = None
+        fab = open(os.environ["FAB"], "rb").read() if os.environ.get("FAB") else None  # test a local build, no publish
         for prompt in sys.argv[1:]:
-            run_id, series = start_chat_run(stub, prompt, federation, series, app_spec=app)
+            run_id, series = start_chat_run(stub, prompt, federation, series, app_spec=app, fab_content=fab)
             print(f"\n>>> {prompt}\n[run {run_id}, series {series}]")
             for res in stub.StreamRunEvents(StreamRunEventsRequest(run_id=run_id)):
                 etype, payload = parse_task_event(res.task_event)

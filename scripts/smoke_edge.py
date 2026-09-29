@@ -7,7 +7,7 @@ import time
 from datetime import date
 
 os.environ["SECOND_BRAIN_DATA"] = tempfile.mkdtemp()
-for k in ("FIREWORKS_API_KEY", "ANTHROPIC_API_KEY", "FLWR_RUNTIME_BASE_URL", "FLWR_RUNTIME_API_KEY", "SECOND_BRAIN_LOCAL"):
+for k in ("FIREWORKS_API_KEY", "ANTHROPIC_API_KEY", "FLWR_RUNTIME_BASE_URL", "FLWR_RUNTIME_API_KEY", "SECOND_BRAIN_LOCAL", "NEBIUS_KIMI_API_KEY", "NEBIUS_MINIMAX_API_KEY", "NEBIUS_BASE_URL"):
     os.environ.pop(k, None)
 
 from second_brain import cards as C, contrastive, goal_engine as G, ics, recap, router, runtime  # noqa: E402
@@ -53,6 +53,7 @@ os.environ["FLWR_RUNTIME_API_KEY"] = "k"
 
 def with_call(fn):
     orig = router._call
+    router._DEAD.clear()
     router._call = fn
     try:
         return router.complete("health", [{"role": "user", "content": "hi"}], SCHEMA, default={})
@@ -95,6 +96,57 @@ try:
 except router.RouterError:
     check(True, "")
 
+# ---- provider chains (kimi -> minimax -> flower), offline fakes ----
+def chain_run(task, behaviour, keys):
+    """behaviour: provider -> str | Exception. keys: env vars to set. Returns (result, providers tried)."""
+    for k in ("NEBIUS_KIMI_API_KEY", "NEBIUS_MINIMAX_API_KEY", "NEBIUS_BASE_URL", "FLWR_RUNTIME_BASE_URL", "FLWR_RUNTIME_API_KEY", "ANTHROPIC_API_KEY"):
+        os.environ.pop(k, None)
+    os.environ.update(keys)
+    tried, orig = [], router._call
+
+    def fake(name, msgs):
+        tried.append(name)
+        b = behaviour[name]
+        if isinstance(b, Exception):
+            raise b
+        return b
+
+    router._DEAD.clear()
+    router._call = fake
+    try:
+        return router.complete(task, [{"role": "user", "content": "hi"}], SCHEMA, default={"x": -1}), tried
+    finally:
+        router._call = orig
+        router._DEAD.clear()
+
+
+ALL = {"NEBIUS_KIMI_API_KEY": "k1", "NEBIUS_MINIMAX_API_KEY": "k2", "FLWR_RUNTIME_BASE_URL": "http://x", "FLWR_RUNTIME_API_KEY": "k3", "ANTHROPIC_API_KEY": "k4"}
+OK = {"kimi": ' {"x": 1}', "minimax": '{"x": 2}', "flower": '{"x": 3}', "claude": '{"x": 4}'}
+res, tried = chain_run("plan", OK, ALL)
+check(res == {"x": 1} and tried == ["kimi"] and router.LAST_PROVIDER == "kimi", f"kimi answers first {tried}")
+res, tried = chain_run("plan", {**OK, "kimi": RuntimeError("429")}, ALL)
+check(res == {"x": 2} and tried == ["kimi", "minimax"] and router.LAST_PROVIDER == "minimax", "kimi fails -> minimax")
+res, tried = chain_run("extract", {**OK, "kimi": RuntimeError("500"), "minimax": TimeoutError("t")}, ALL)
+check(res == {"x": 3} and tried == ["kimi", "minimax", "flower"] and router.LAST_PROVIDER == "flower", "kimi+minimax fail -> flower")
+res, tried = chain_run("plan", OK, {k: v for k, v in ALL.items() if not k.startswith("NEBIUS")})
+check(res == {"x": 3} and tried == ["flower"], "missing NEBIUS keys skip kimi+minimax")
+res, tried = chain_run("plan", {k: RuntimeError("down") for k in OK}, ALL)
+check(res == {"x": -1} and router.LAST_PROVIDER is None and "claude" not in tried, "all fail -> default, LAST_PROVIDER None")
+res, tried = chain_run("health", {k: RuntimeError("down") for k in OK}, ALL)
+check(res == {"x": -1} and "claude" not in tried and "minimax" not in tried, f"health never reaches claude {tried}")
+res, tried = chain_run("write", {**OK, "kimi": RuntimeError("x"), "minimax": RuntimeError("y")}, ALL)
+check(res == {"x": 4} and tried == ["kimi", "minimax", "claude"], f"write falls kimi->minimax->claude {tried}")
+check({"kimi", "minimax", "flower", "claude"} <= router.PROVIDERS_USED, "PROVIDERS_USED accumulates")
+check("[redacted]" in router._redact("Bearer " + "a" * 40) and "a" * 30 not in router._redact("x" + "a" * 40), "token-like strings redacted")
+os.environ["NEBIUS_KIMI_API_KEY"] = "k"
+check(router._model("kimi").startswith("dedicated/") and router.available("kimi") and router._base_url("kimi").startswith("https://"), "kimi cfg defaults")
+os.environ["NEBIUS_KIMI_MODEL"] = "m-override"
+check(router._model("kimi") == "m-override", "model_env override")
+for k in ("NEBIUS_KIMI_API_KEY", "NEBIUS_KIMI_MODEL"):
+    os.environ.pop(k, None)
+for k in ("FLWR_RUNTIME_BASE_URL", "FLWR_RUNTIME_API_KEY", "ANTHROPIC_API_KEY"):
+    os.environ.pop(k, None)
+
 # ---------------- contrastive ----------------
 check(contrastive.score("g", []) == ([], "none"), "empty candidates")
 check(contrastive._cos([0, 0, 0], [[1, 2, 3], [0, 0, 0]]) == [0.0, 0.0], "zero goal vector")
@@ -122,7 +174,7 @@ hung.StaticModel = _SM
 sys.modules["model2vec"] = hung
 t0 = time.time()
 s, be = contrastive.score("land an AI security role", ["AI security meetup", "AI security meetup", "binge tv"])
-check(be in ("llm-judge", "keyword-overlap") and len(s) == 3, f"fallback backend {be}")
+check(be in ("llm-judge", "ngram-hash", "keyword-overlap") and len(s) == 3, f"fallback backend {be}")
 check(time.time() - t0 < 10, "load failure returned promptly")
 check(contrastive._M2V_FAILED, "failure cached")
 t0 = time.time()

@@ -90,7 +90,50 @@ workstreams:
       - "planner: stale sleep logs ignored (today/yesterday only), overlapping tired blocks removed, garbage constraints tolerated. health: 'slept for 6h', minutes/clock not hours, 'gym 1 hour', LLM-invented values dropped. content: no dangling '#', prompt inputs delimited. goal_engine: empty LLM output -> defaults, event URLs not in fetched text dropped, prompts delimited, hours garbage tolerated. recap: missing fields tolerated."
     open_for_other_owners: "agent_app.py: decide with session lacking 'goal' (health cards before a goal) raises KeyError (caught by main, but reply is an error); new card ids use len(cards)+1 (use max id+1); intent 'decide' needs pending cards. flwr build writes .fab into repo root (gitignore?)."
 
+  G_hub_webfetch:
+    owner: subagent G
+    scope: second_brain/{goal_engine,connectors,agent_app}.py, agents/events.py, scripts/smoke_hub.py
+    status: done (smoke_hub, smoke, smoke_agents, smoke_edge, smoke_runtime pass; flwr build OK)
+    decisions:
+      - "Hub discovery uses ONLY web_fetch (no web_search) on hub_urls(): lu.ma/discover, eventbrite d/online/<slug>--events, meetup find?keywords=; max 3 fetches, 2 rounds; events kept only if URL is in the actually-fetched text (connectors.research sink=); fallback to profile communities."
+      - "Local mode: discover_events first tries local.discovery.discover(goal, profile, window) (ImportError/empty -> hub path). context() still asks slack/notion but they are skipped as credentialed."
+      - "set_goal speed: capture is regex-first (LLM only if no deadline and text >300 chars); decompose and change_plan run in parallel threads (change_plan(goal, None, profile) needs no milestones; defaults on failure/100s join); so <=2 concurrent LLM calls."
+    todo: "alignment/rank still go through contrastive.score (model2vec first; llm-judge only if it fails) - contrastive owner could skip the llm-judge on the hub critical path"
+
+  F_local_run:
+    owner: subagent F
+    scope: scripts/run_local.py, second_brain/local/*, second_brain/executor/aside.py, second_brain/recap_page/*
+    status: done (run_local --once works offline; real aside CLI 1.26.916 exercised; smoke*.py pass; flwr build OK)
+    files: "scripts/run_local.py, second_brain/local/discovery.py, second_brain/executor/aside.py"
+    decisions:
+      - "Real CLI: `aside exec <prompt>` blocks and streams ANSI text; session line is 'created new session: <id>'; no final-step marker exists, so aside.run appends a SAFETY suffix asking for a line 'AT FINAL STEP: ...' before any final click. `aside guide`/`--update` no longer run per call (ASIDE_UPDATE=1 opts in)."
+      - "aside.run accepts str or brief dict (base.run passes a dict). Runner uses Popen so a 150s timeout keeps the partial output and session id."
+      - "run_local hooks executor_base.run: approved briefs run aside in background threads; confirmation cards printed; REPL confirm <sid> (steer) / stop <sid>. --no-aside = briefs only."
+      - "discovery.discover(goal, profile, window) for goal_engine (agent G) when runtime.mode()=='local': keeps only 'title | date | url' lines whose http(s) URL is in the output; [] on failure; stops timed-out session."
+    todo: "agent G wires discovery into goal_engine; briefs for generic cards give Aside vague tasks (rsvp brief without event url timed out at 150s)."
+
+  H_agent_gaps:
+    owner: subagent H
+    scope: second_brain/{agent_app,cards}.py, agents/{health,content}.py, scripts/smoke_agents.py
+    status: done (smoke, smoke_agents, smoke_edge, smoke_runtime, smoke_hub pass; flwr build OK)
+    decisions:
+      - "agent_app: _probe SyntaxError fixed; decide always routes to decide handler, which replies 'Tell me your goal first' (no goal) or 'no pending cards'; _next_id = max id + 1 at all call sites."
+      - "reply prints 'model: <router.LAST_PROVIDER or rule-based>' once for goal and planner replies; scorer text kept."
+      - "health: 'slept 5h' -> one 'Lighter plan tomorrow' card (item text + hours 1.5, kind routine) so approval changes alignment; health_log stores typed string + parsed value only; never claude."
+      - "content: parse_input strips 'post about', 'write a post', 'recap event'; one card per community; brief after approval via briefs/executor.base."
+      - "smoke_agents: state file fallback leaks sessions across contexts, so scenarios use a fresh SECOND_BRAIN_DATA."
+
+  I_providers:
+    owner: subagent I
+    scope: second_brain/{router,contrastive}.py, config/models.yaml, scripts/smoke_{edge,hub,runtime}.py
+    status: done (all 6 smokes pass with and without data/.env; live plan+write answered by kimi; flwr build OK)
+    decisions:
+      - "Providers kimi/minimax (Nebius Responses API, base_url default in yaml or NEBIUS_BASE_URL, keys NEBIUS_KIMI_API_KEY/NEBIUS_MINIMAX_API_KEY, model override NEBIUS_*_MODEL). Chains: extract/plan/rank_explain [kimi, minimax, flower]; health [flower, kimi] (never claude); write [kimi, minimax, claude, flower]."
+      - "router.LAST_PROVIDER (None = rule-based default) and PROVIDERS_USED; _redact strips 30+ char token-like strings from logged errors; any non-JSON provider error marks provider dead for DEAD_FOR s."
+      - "contrastive model2vec load already uses ThreadPoolExecutor + shutdown(wait=False) with failure cached (no change needed)."
+
 changelog:
+  - "2026-09-29 F_local_run: scripts/run_local.py (REPL/--once/--embed), local/discovery.py, aside.py adapted to real CLI."
   - "2026-09-29 e17374a scaffold pushed (Flower AgentApp at repo root, Hub-valid pyproject)."
   - "2026-09-29 engine block written: runtime/router/contrastive/connectors/goal_engine/cards/events agent/agent_app/smoke. Offline smoke OK (model2vec scorer)."
   - "2026-09-29 workstream C: README.md, DEMO.md, scripts/check_bundle.py added."
@@ -99,3 +142,6 @@ changelog:
   - "2026-09-29 published v0.1.0 (lokilks). `flwr run . supergrid --stream` fails with code 44 (user prompt required); run-config agent.input does NOT supply it. Prompt is supplied via `flwr chat` (interactive) - live runtime test still TODO."
   - "2026-09-29 D_runtime_audit: immediate working delta, turn deadline, connector auth-skip/timeouts, smoke_runtime.py."
   - "2026-09-29 E_logic_bughunt: adversarial pass on router/contrastive/cards/ics/briefs/planner/health/content; scripts/smoke_edge.py added; ~25 bugs fixed."
+  - "2026-09-29 G_hub_webfetch: web_fetch-only event discovery, local discovery hook, set_goal <=2 parallel LLM calls, scripts/smoke_hub.py."
+  - "2026-09-29 H_agent_gaps: probe syntax fix, decide guards, health lighter-plan card, content post-about, model: line, smoke_agents extended."
+  - "2026-09-29 I_providers: kimi/minimax (Nebius Responses API) added to router chains, LAST_PROVIDER/PROVIDERS_USED, key redaction, chain smokes."

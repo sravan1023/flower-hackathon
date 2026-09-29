@@ -1,10 +1,12 @@
 providers:
   flower: {kind: openai, base_url_env: FLWR_RUNTIME_BASE_URL, key_env: FLWR_RUNTIME_API_KEY, model: "openai/gpt-5.6-sol"}
+  kimi: {kind: openai, api_style: responses, base_url: "https://api.tokenfactory.tf-ca1.nebius.com/v1/", base_url_env: NEBIUS_BASE_URL, key_env: NEBIUS_KIMI_API_KEY, model_env: NEBIUS_KIMI_MODEL, model: "dedicated/flowerai/Kimi-K2.7-Code-1OUHWL"}
+  minimax: {kind: openai, api_style: responses, base_url: "https://api.tokenfactory.tf-ca1.nebius.com/v1/", base_url_env: NEBIUS_BASE_URL, key_env: NEBIUS_MINIMAX_API_KEY, model_env: NEBIUS_MINIMAX_MODEL, model: "dedicated/flowerai/MiniMax-M3-OOLI9o"}
   fireworks: {kind: openai, base_url: "https://api.fireworks.ai/inference/v1", key_env: FIREWORKS_API_KEY, model: "accounts/fireworks/models/llama-v3p3-70b-instruct", embed_model: "nomic-ai/nomic-embed-text-v1.5"}
   claude: {kind: anthropic, key_env: ANTHROPIC_API_KEY, model: "claude-sonnet-4-5"}
 tasks:
-  extract: [flower, fireworks]
-  plan: [fireworks, flower]
-  health: [flower]
-  rank_explain: [flower, fireworks]
-  write: [claude, fireworks, flower]
+  extract: [kimi, minimax, flower]
+  plan: [kimi, minimax, flower]
+  health: [flower, kimi]
+  rank_explain: [kimi, minimax, flower]
+  write: [kimi, minimax, claude, flower]

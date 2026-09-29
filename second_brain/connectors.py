@@ -27,7 +27,7 @@ def _usable(names: list[str]) -> list[str]:
 
         return [n for n in names if (c := registry._CONNECTORS_BY_REF.get(n)) is not None and not c.requires_credentials]
     except Exception:  # noqa: BLE001 - unknown registry layout: only allow the well-known open ones
-        return [n for n in names if n in ("web_search", "web_fetch")]
+        return [n for n in names if n == "web_fetch"]
 
 
 def _call_with_timeout(agent: Any, call: dict, timeout: float) -> dict:
@@ -52,7 +52,7 @@ def _dump(o: Any) -> dict:
     return o.model_dump(exclude_none=True) if hasattr(o, "model_dump") else o.to_dict()
 
 
-def research(agent: Any, prompt: str, tool_names: list[str]) -> str:
+def research(agent: Any, prompt: str, tool_names: list[str], max_calls: int = 6, max_rounds: int = MAX_ROUNDS, sink: list | None = None) -> str:
     """Run up to MAX_ROUNDS of tool calls on the flower runtime model; return final text ('' on any failure)."""
     if not router.available("flower"):
         return ""
@@ -70,7 +70,8 @@ def research(agent: Any, prompt: str, tool_names: list[str]) -> str:
         tools = agent.connectors.tools(names)
         allowed = {t["name"] for t in tools if isinstance(t.get("name"), str)}
         items: list[Any] = [{"role": "system", "content": GUARD}, {"role": "user", "content": prompt}]
-        for _ in range(MAX_ROUNDS):
+        made = 0
+        for _ in range(max_rounds):
             if time.time() - t0 > BUDGET_S:
                 break
             resp = client.responses.create(model=model, input=items, tools=tools, tool_choice="auto")
@@ -81,7 +82,14 @@ def research(agent: Any, prompt: str, tool_names: list[str]) -> str:
             for c in calls:
                 if c.get("name") not in allowed:
                     raise RuntimeError(f"tool {c.get('name')!r} was not exposed")
-                items.append(_call_with_timeout(agent, c, CALL_TIMEOUT_S))
+                if made >= max_calls:  # over the fetch cap: answer the call without running it
+                    out = {"type": "function_call_output", "call_id": c.get("call_id", ""), "output": '{"error": "fetch limit reached"}'}
+                else:
+                    made += 1
+                    out = _call_with_timeout(agent, c, CALL_TIMEOUT_S)
+                if sink is not None:
+                    sink.append(str(out.get("output", "") if isinstance(out, dict) else out))
+                items.append(out)
         return client.responses.create(model=model, input=items).output_text  # final answer, no tools
     except Exception as e:  # noqa: BLE001 - degrade to profile-based candidates
         runtime.log({"task": "connectors", "tools": tool_names, "error": str(e)[:200]})

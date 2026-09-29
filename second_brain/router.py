@@ -1,4 +1,4 @@
-"""One interface over three providers: flower (runtime), fireworks, claude.
+"""One interface over providers: flower (runtime), kimi/minimax (Nebius), fireworks, claude.
 
 complete(task, messages, json_schema=None, default=None) -> dict | str
 embed(texts) -> list[list[float]]
@@ -18,6 +18,10 @@ from . import runtime
 
 _CFG: dict | None = None
 _OVERRIDE: dict[str, str] = {}
+_DEAD: dict[str, float] = {}  # provider -> time it last failed hard (circuit breaker)
+DEAD_FOR = 120.0
+LAST_PROVIDER: str | None = None  # provider that answered the most recent complete() (None = rule-based default)
+PROVIDERS_USED: set[str] = set()
 
 
 class RouterError(RuntimeError):
@@ -39,39 +43,64 @@ def configure(run_config: Any) -> None:
 
 
 def _model(name: str) -> str:
-    return _OVERRIDE.get(name) or cfg()["providers"][name]["model"]
+    p = cfg()["providers"][name]
+    return _OVERRIDE.get(name) or (os.environ.get(p.get("model_env", "")) if p.get("model_env") else None) or p["model"]
+
+
+def _base_url(name: str) -> str | None:
+    p = cfg()["providers"][name]
+    return (os.environ.get(p["base_url_env"]) if p.get("base_url_env") else None) or p.get("base_url")
 
 
 def available(name: str) -> bool:
     p = cfg()["providers"][name]
-    if name == "flower":
-        return bool(os.environ.get("FLWR_RUNTIME_BASE_URL") and os.environ.get("FLWR_RUNTIME_API_KEY"))
-    return bool(os.environ.get(p["key_env"]))
+    if not os.environ.get(p["key_env"]):
+        return False
+    if p.get("kind") == "anthropic":
+        return True
+    return bool(_base_url(name))
 
 
 def _openai(name: str):
     from openai import OpenAI
 
-    p = cfg()["providers"][name]
+    key = os.environ[cfg()["providers"][name]["key_env"]]
     if name == "flower":
-        return OpenAI(base_url=os.environ["FLWR_RUNTIME_BASE_URL"], api_key=os.environ["FLWR_RUNTIME_API_KEY"], max_retries=0, timeout=45)
-    return OpenAI(base_url=p["base_url"], api_key=os.environ[p["key_env"]], max_retries=1, timeout=60)
+        return OpenAI(base_url=_base_url(name), api_key=key, max_retries=0, timeout=60)
+    return OpenAI(base_url=_base_url(name), api_key=key, max_retries=1, timeout=60)
+
+
+_TOKENISH = re.compile(r"[A-Za-z0-9_\-\.=+/]{30,}")
+
+
+def _redact(text: str) -> str:
+    """Never let key-looking strings reach logs/errors."""
+    return _TOKENISH.sub("[redacted]", str(text))[:200]
 
 
 def _call(name: str, messages: list[dict]) -> str:
-    if name == "claude":
+    p = cfg()["providers"][name]
+    if p.get("kind") == "anthropic":
         import anthropic
 
         system = "\n".join(m["content"] for m in messages if m["role"] == "system")
         rest = [m for m in messages if m["role"] != "system"]
         kw = {"system": system} if system else {}
-        r = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"]).messages.create(
-            model=_model("claude"), max_tokens=2000, messages=rest, **kw
+        r = anthropic.Anthropic(api_key=os.environ[p["key_env"]]).messages.create(
+            model=_model(name), max_tokens=2000, messages=rest, **kw
         )
         return "".join(b.text for b in r.content if getattr(b, "type", "") == "text")
     client = _openai(name)
-    if name == "flower":  # runtime speaks the Responses API
-        return client.responses.create(model=_model(name), input=messages).output_text
+    if name == "flower":  # runtime speaks the Responses API (streamed)
+        parts: list[str] = []
+        for ev in client.responses.create(model=_model(name), input=messages, stream=True):
+            if ev.type == "response.output_text.delta":
+                parts.append(ev.delta)
+            elif ev.type in ("error", "response.failed"):
+                raise RuntimeError(f"flower model failed: {_redact(str(ev))}")
+        return "".join(parts)
+    if p.get("api_style") == "responses":
+        return (client.responses.create(model=_model(name), input=messages).output_text or "").strip()
     r = client.chat.completions.create(model=_model(name), messages=messages)
     return r.choices[0].message.content or ""
 
@@ -126,13 +155,14 @@ _NODEFAULT = object()
 
 def complete(task: str, messages: list[dict], json_schema: dict | None = None, default: Any = _NODEFAULT) -> Any:
     """Route by task, fall back down the chain. JSON: validate, retry once, then `default`."""
+    global LAST_PROVIDER
     runtime.load_env()
     if json_schema:
         messages = messages + [
             {"role": "system", "content": "Reply with ONLY valid JSON matching this schema: " + json.dumps(json_schema)}
         ]
     for name in cfg()["tasks"].get(task, []):
-        if not available(name):
+        if not available(name) or time.time() - _DEAD.get(name, 0.0) < DEAD_FOR:
             continue
         msgs = list(messages)
         for attempt in (1, 2):
@@ -146,13 +176,17 @@ def complete(task: str, messages: list[dict], json_schema: dict | None = None, d
                     res = _parse_json(out)
                     validate(res, json_schema)
                 runtime.log({"task": task, "provider": name, "model": _model(name), "latency": round(time.time() - t0, 2), "attempt": attempt})
+                LAST_PROVIDER = name
+                PROVIDERS_USED.add(name)
                 return res
             except (ValueError, json.JSONDecodeError) as e:  # bad JSON / schema: retry once
-                runtime.log({"task": task, "provider": name, "error": str(e)[:200], "attempt": attempt})
+                runtime.log({"task": task, "provider": name, "error": _redact(e), "attempt": attempt})
                 msgs = msgs + [{"role": "user", "content": f"Invalid ({e}). Return only valid JSON."}]
             except Exception as e:  # noqa: BLE001 - provider/network errors: next provider
-                runtime.log({"task": task, "provider": name, "error": str(e)[:200], "attempt": attempt})
+                _DEAD[name] = time.time()  # one timeout per provider, not one per call
+                runtime.log({"task": task, "provider": name, "error": _redact(e), "attempt": attempt})
                 break
+    LAST_PROVIDER = None
     if default is not _NODEFAULT:  # falsy defaults ({}, [], "") are valid; only "not passed" raises
         runtime.log({"task": task, "provider": "rule-based-default"})
         return default
@@ -169,7 +203,7 @@ def embed(texts: list[str]) -> list[list[float]]:
     try:
         r = _openai("fireworks").embeddings.create(model=p["embed_model"], input=texts)
     except Exception as e:  # noqa: BLE001
-        runtime.log({"task": "embed", "provider": "fireworks", "error": str(e)[:200]})
+        runtime.log({"task": "embed", "provider": "fireworks", "error": _redact(e)})
         raise RouterError(str(e)) from e
     runtime.log({"task": "embed", "provider": "fireworks", "model": p["embed_model"], "latency": round(time.time() - t0, 2)})
     return [d.embedding for d in r.data]

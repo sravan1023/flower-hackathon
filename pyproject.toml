@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "second-brain"
-version = "0.1.1"
+version = "0.1.3"
 description = "Goal-driven Second Brain: turns a goal into milestones, ranks options with embeddings, and issues decision cards you approve."
 readme = "README.md"
 license = { file = "LICENSE" }

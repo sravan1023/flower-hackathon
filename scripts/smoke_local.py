@@ -28,10 +28,10 @@ r = fake(lambda a: (0, "Created new session: abc-123\nAll done\x1b[31m\x00") if 
 res = aside.run("do thing", runner=r)
 assert res["session_id"] == "abc-123" and res["status"] == "done", res
 assert "\x00" not in res["output"] and "\x1b" not in res["output"]
-assert [c[1] for c in r.calls] == ["--update", "guide", "exec"], r.calls
+assert [c[1] for c in r.calls] == ["exec"], r.calls
 
 # 2. final step -> card, no click
-r = fake(lambda a: (0, "Created new session: s9\nAgent is at final step: Submit") if a[1] == "exec" else (0, ""))
+r = fake(lambda a: (0, "Created new session: s9\nAT FINAL STEP: Submit") if a[1] == "exec" else (0, ""))
 res = aside.run("buy ticket", runner=r)
 assert res["status"] == "confirm" and res["card"]["status"] == "pending" and res["card"]["session_id"] == "s9", res
 assert not any(c[1] == "session" for c in r.calls)

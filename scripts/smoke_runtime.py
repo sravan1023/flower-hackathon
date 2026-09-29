@@ -11,7 +11,7 @@ import tempfile
 import time
 
 os.environ["SECOND_BRAIN_DATA"] = tempfile.mkdtemp()
-for k in ("FLWR_RUNTIME_BASE_URL", "FLWR_RUNTIME_API_KEY", "FIREWORKS_API_KEY", "ANTHROPIC_API_KEY", "SECOND_BRAIN_LOCAL"):
+for k in ("FLWR_RUNTIME_BASE_URL", "FLWR_RUNTIME_API_KEY", "FIREWORKS_API_KEY", "ANTHROPIC_API_KEY", "SECOND_BRAIN_LOCAL", "NEBIUS_KIMI_API_KEY", "NEBIUS_MINIMAX_API_KEY"):
     os.environ.pop(k, None)
 
 from second_brain import agent_app
@@ -78,4 +78,31 @@ agent_app.DEADLINE_S, agent_app.BEAT_S = 2, 1
 assert "took longer" in run("x")
 print("ok timeout path")
 agent_app.handle = orig
+
+# router: with Nebius keys and a failing kimi, a set_goal turn still completes (minimax fake answers), LAST_PROVIDER tracked
+from second_brain import router  # noqa: E402
+
+_seen = []
+
+
+def _fake(name, msgs):
+    _seen.append(name)
+    if name == "kimi":
+        raise TimeoutError("timeout")
+    raise RuntimeError("down")
+
+
+os.environ.update(NEBIUS_KIMI_API_KEY="k1", NEBIUS_MINIMAX_API_KEY="k2")
+_orig = router._call
+router._call = _fake
+router._DEAD.clear()
+agent_app.DEADLINE_S, agent_app.BEAT_S = 150, 20
+assert "Goal" in run("My goal: land an AI security role by December")
+assert _seen[:2] == ["kimi", "minimax"] and router.LAST_PROVIDER is None, (_seen[:3], router.LAST_PROVIDER)
+assert _seen.count("kimi") == 1, "circuit breaker: kimi tried once"
+router._call = _orig
+router._DEAD.clear()
+for _k in ("NEBIUS_KIMI_API_KEY", "NEBIUS_MINIMAX_API_KEY"):
+    os.environ.pop(_k, None)
+print("ok router fallthrough + breaker in a full turn")
 print("SMOKE RUNTIME OK")

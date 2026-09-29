@@ -25,6 +25,7 @@ app = AgentApp()
 _SEQ = 0
 DEADLINE_S = 150  # hard cap on one turn; the chat always gets an answer before this
 BEAT_S = 20
+PLAN_JOIN_S = 100
 
 
 def _emit(agent: AgentSession, event: dict) -> None:
@@ -59,8 +60,8 @@ def say(agent: AgentSession, text: str) -> None:
 def intent(text: str, session: dict) -> str:
     """Rule-first intent; the flower model only breaks ties."""
     t = text.lower()
-    if cardlib.has_decisions(t) and any(c["status"] == "pending" for c in session.get("cards", [])):
-        return "decide"
+    if cardlib.has_decisions(t):
+        return "decide"  # handle() explains when there is no goal or no pending card
     if re.match(r"\s*(my )?goal\b|\s*i want to\b", t):
         return "set_goal"
     if re.search(r"\bslept\b|\bsleep\b|\bworked out\b|\bworkout\b", t):
@@ -82,6 +83,11 @@ def _next_id(session: dict) -> int:
     return max([c["id"] for c in session.get("cards", [])] or [0]) + 1
 
 
+def _model_line() -> str:
+    """Which provider answered last (router.LAST_PROVIDER when present), else rule-based."""
+    return f"model: {getattr(router, 'LAST_PROVIDER', None) or 'rule-based'}"
+
+
 def _activities(profile: dict, cards: list[dict]) -> list[dict]:
     return profile.get("activities", []) + [c["item"] for c in cards if c["status"] == "approved"]
 
@@ -96,7 +102,37 @@ def _summary(session: dict, profile: dict) -> str:
     return "\n".join(lines)
 
 
+def _probe() -> str:
+    """`!probe`: call the runtime model exactly like the scaffold does and report raw outcomes (diagnostics)."""
+    import os
+    import time
+
+    from openai import OpenAI
+
+    out = [f"model={router._model('flower')} base={os.environ.get('FLWR_RUNTIME_BASE_URL', '?')[:60]}"]
+    variants = {
+        "scaffold-style stream": dict(input=[{"type": "message", "role": "user", "content": "Reply with the word ok."}], stream=True),
+        "plain-role stream": dict(input=[{"role": "user", "content": "Reply with the word ok."}], stream=True),
+        "string input no stream": dict(input="Reply with the word ok."),
+    }
+    for name, kw in variants.items():
+        t0 = time.time()
+        try:
+            c = OpenAI(base_url=os.environ["FLWR_RUNTIME_BASE_URL"], api_key=os.environ["FLWR_RUNTIME_API_KEY"], max_retries=0, timeout=25)
+            r = c.responses.create(model=router._model("flower"), **kw)
+            if kw.get("stream"):
+                types = [e.type for e in r]
+                out.append(f"{name}: OK {time.time() - t0:.1f}s events={types[:6]}...{len(types)}")
+            else:
+                out.append(f"{name}: OK {time.time() - t0:.1f}s text={r.output_text[:40]!r}")
+        except Exception as e:  # noqa: BLE001
+            out.append(f"{name}: FAIL {time.time() - t0:.1f}s {type(e).__name__}: {str(e)[:200]}")
+    return "\n".join(out)
+
+
 def handle(agent: AgentSession, context: Context, text: str) -> str:
+    if text.strip() == "!probe":
+        return _probe()
     profile = runtime.load_profile()
     session = runtime.load_state(context, "session", {}) or {}
     kind = intent(text, session)
@@ -107,10 +143,24 @@ def handle(agent: AgentSession, context: Context, text: str) -> str:
         goal = goal_engine.capture(text)
         runtime.stage("context")
         ctx = goal_engine.context(agent, goal["goal"])
-        runtime.stage("decompose")
-        miles = goal_engine.decompose(goal, profile, ctx)
-        runtime.stage("change_plan")
-        cards, backend = goal_engine.change_plan(goal, miles, profile)
+        runtime.stage("decompose+change_plan")
+        # two independent LLM calls in parallel (change_plan must not wait for decompose); each falls back to defaults
+        box: dict[str, Any] = {}
+
+        def _run(key: str, fn: Any) -> None:
+            try:
+                box[key] = fn()
+            except BaseException as e:  # noqa: BLE001
+                runtime.log({"task": key, "error": str(e)[:200]})
+
+        th = [threading.Thread(target=_run, args=("decompose", lambda: goal_engine.decompose(goal, profile, ctx)), daemon=True),
+              threading.Thread(target=_run, args=("change_plan", lambda: goal_engine.change_plan(goal, None, profile)), daemon=True)]
+        for x in th:
+            x.start()
+        for x in th:
+            x.join(PLAN_JOIN_S)
+        miles = box.get("decompose") or goal_engine.decompose_default(goal)
+        cards, backend = box.get("change_plan") or goal_engine.change_plan_default(goal, profile)
         runtime.stage("alignment")
         before, be = goal_engine.alignment(goal["goal"], profile.get("activities", []))
         runtime.stage("done")
@@ -118,8 +168,12 @@ def handle(agent: AgentSession, context: Context, text: str) -> str:
         session = {"started": time.time(), "goal": goal, "milestones": miles, "cards": cards, "alignment_before": before, "scorer": backend}
         out = [f"**Goal:** {goal['goal']} (by {goal['deadline']}) - why: {goal['why'] or 'n/a'}", "", "**Milestones**"]
         out += [f"- {m['title']} (by {m['by']}): {m['weekly']}" for m in miles]
-        out += ["", f"Alignment of your current routine with this goal: **{before}** (scorer: {backend})", "", cardlib.render(cards)]
+        out += ["", f"Alignment of your current routine with this goal: **{before}** (scorer: {backend})", _model_line(), "", cardlib.render(cards)]
         reply = "\n".join(out)
+    elif kind == "decide" and not session.get("goal"):
+        reply = "Tell me your goal first (e.g. 'My goal: land an AI security role by December'), then I can show cards to decide on."
+    elif kind == "decide" and not any(c.get("status") == "pending" for c in session.get("cards", [])):
+        reply = "There are no pending cards to decide on. Ask me to plan tomorrow, find events, or post about an event to get some."
     elif kind == "decide":
         cardlib.apply(session["cards"], cardlib.parse_reply(text), profile)
         runtime.save_profile(profile)
