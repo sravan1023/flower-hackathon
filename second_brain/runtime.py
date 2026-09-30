@@ -95,10 +95,21 @@ def save_profile(profile: dict) -> None:
         pass
 
 
+def _state_file(context: Any, key: str) -> Path:
+    """File fallback keyed by run series (else run id) so a shared worker never mixes users."""
+    sid = getattr(context, "series_id", 0) or 0
+    if sid:
+        tag = f".s{int(sid)}"
+    else:
+        rid = getattr(context, "run_id", None)
+        tag = f".r{int(rid)}" if isinstance(rid, int) and rid else ""
+    return data_dir() / f"{key}{tag}.json"
+
+
 def save_state(context: Any, key: str, obj: Any) -> None:
     """Persist across turns: Flower context.state when available, plus a file."""
     try:
-        (data_dir() / f"{key}.json").write_text(json.dumps(obj), encoding="utf-8")
+        _state_file(context, key).write_text(json.dumps(obj), encoding="utf-8")
     except Exception:  # read-only FS must not break the turn
         pass
     try:
@@ -115,7 +126,7 @@ def load_state(context: Any, key: str, default: Any = None) -> Any:
     except Exception:
         pass
     try:
-        p = data_dir() / f"{key}.json"
+        p = _state_file(context, key)
         return json.loads(p.read_text(encoding="utf-8")) if p.exists() else default
     except Exception:
         return default

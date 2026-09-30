@@ -105,4 +105,21 @@ router._DEAD.clear()
 for _k in ("NEBIUS_KIMI_API_KEY", "NEBIUS_MINIMAX_API_KEY"):
     os.environ.pop(_k, None)
 print("ok router fallthrough + breaker in a full turn")
+
+
+class _SC:
+    def __init__(self, sid, rid=0):
+        self.state, self.series_id, self.run_id = {}, sid, rid
+
+
+import tempfile as _tf
+
+from second_brain import runtime  # noqa: E402
+
+os.environ["SECOND_BRAIN_DATA"] = _tf.mkdtemp()
+runtime.save_state(_SC(7, 1), "session", {"u": "A"})
+assert runtime.load_state(_SC(7, 2), "session") == {"u": "A"}, "same series continues via file"
+assert runtime.load_state(_SC(8, 3), "session") is None, "other series must not see it"
+assert runtime.load_state(_SC(0, 4), "session") is None, "series-less run must not see series state"
+print("ok state file fallback keyed by series")
 print("SMOKE RUNTIME OK")

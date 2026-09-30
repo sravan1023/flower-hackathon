@@ -87,3 +87,61 @@ def issue(session: dict) -> list[dict]:
             except (NotApproved, OSError, ValueError) as e:
                 runtime.log({"task": "brief_error", "card": c.get("id"), "error": str(e)[:200]})
     return out
+
+
+_MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def _parse_when(item: dict) -> tuple[str, str] | None:
+    """(YYYY-MM-DD, HH:MM) from a planner ISO start or an event's free-text date; None if a time cannot be derived."""
+    start = str(item.get("start") or "")
+    m = re.match(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})", start)
+    if m:
+        return m.group(1), f"{m.group(2)}:{m.group(3)}"
+    text = str(item.get("date") or "")
+    d = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if d:
+        day = f"{d.group(1)}-{d.group(2)}-{d.group(3)}"
+    else:
+        md = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\b", text.lower())
+        if not md:
+            return None
+        year = __import__("datetime").date.today().year
+        day = f"{year}-{_MONTHS[md.group(1)]:02d}-{int(md.group(2)):02d}"
+    t = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+    if t:
+        return day, f"{int(t.group(1)):02d}:{t.group(2)}"
+    ap = re.search(r"\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b", text.lower())
+    if ap:
+        h = int(ap.group(1)) % 12 + (12 if ap.group(3) == "pm" else 0)
+        return day, f"{h:02d}:{ap.group(2) or '00'}"
+    return None
+
+
+def calendar_events(session: dict) -> list[dict]:
+    """Approved calendar/event cards -> [{title, date, start, duration(min), description}] for aside.calendar_create."""
+    out: list[dict] = []
+    goal = session.get("goal") or {}
+    for c in session.get("cards", []):
+        if c.get("status") != "approved":
+            continue
+        item = c.get("item") or {}
+        if item.get("kind", "calendar") not in ("calendar", "rsvp"):
+            continue
+        when = _parse_when(item)
+        if not when:
+            runtime.log({"task": "calendar_events_skip", "card": c.get("id"), "reason": "no date/time derivable"})
+            continue
+        try:
+            minutes = max(15, int(round(float(item.get("hours", 1)) * 60)))
+        except (TypeError, ValueError):
+            minutes = 60
+        ctx = item.get("milestone") or goal.get("goal", "")
+        out.append({
+            "title": _line(item.get("text") or c.get("title", ""), 80),
+            "date": when[0],
+            "start": when[1],
+            "duration": minutes,
+            "description": f"Second Brain: {_line(ctx, 120)}",
+        })
+    return out

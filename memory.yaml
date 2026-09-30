@@ -132,6 +132,56 @@ workstreams:
       - "router.LAST_PROVIDER (None = rule-based default) and PROVIDERS_USED; _redact strips 30+ char token-like strings from logged errors; any non-JSON provider error marks provider dead for DEAD_FOR s."
       - "contrastive model2vec load already uses ThreadPoolExecutor + shutdown(wait=False) with failure cached (no change needed)."
 
+  K_aside_tasks:
+    owner: subagent K
+    scope: second_brain/executor/{aside,briefs}.py, second_brain/agents/planner.py, scripts/smoke_aside_tasks.py
+    status: done (smoke_aside_tasks + all other smokes pass; flwr build OK)
+    files: "aside.py (new_marker, whatsapp_send/wait_reply/poll/poll_result, calendar_create, enabled/whatsapp_ready/calendar_ready), briefs.calendar_events, planner.run(week=True)"
+    decisions:
+      - "Agent messages carry [SB-xxxx]; user message = any chat line without '[SB-' (own-chat has one sender). All tasks go via aside exec, never raise, log only {task, latency, rc} (never task text: may hold phone/email). Max 8 sends/process (whatsapp_send + whatsapp_poll)."
+      - "Runner/sleep injectable (runner=, sleep= kwargs); user text in tasks is single-line with quotes escaped. calendar_create accepts only CREATED lines whose title matches an input title."
+      - "Week planner: tomorrow..+7 days, <=12 cards, two alternative slots each (nearby days), item.milestone set; calendar_events skips approved cards with no derivable time (logged)."
+
+  J_verifier:
+    owner: subagent J
+    scope: verification pass (all smokes with/without data/.env, live local, live SuperGrid)
+    status: done
+    fixed:
+      - "runtime.load_state/save_state file fallback keyed by context.series_id (else run_id); smoke_runtime checks no cross-series read."
+      - "agent_app.intent: with a goal set, 'find events for my goal' now routes to events (was set_goal because of the word goal)."
+    findings: "SuperGrid: flower runtime model calls time out (read 25-60s) in all 3 probe variants, so replies say model: rule-based, scorer ngram-hash; run start queue ~2-3 min. Local live: kimi plan/health + fireworks-nomic embeddings OK."
+
+  L_whatsapp_loop:
+    owner: subagent L
+    scope: second_brain/{agent_app,recap}.py, scripts/smoke_local.py
+    status: done (smoke_local incl. fake-aside WhatsApp loop, smoke_hub, smoke*, flwr build pass)
+    decisions:
+      - "Local-only (aside.whatsapp_ready() and env WHATSAPP_TO); Hub never imports aside for this (agent_app._aside() returns None unless SECOND_BRAIN_LOCAL=1). Not ready = today's chat behaviour."
+      - "agent_app: handle() split into _dispatch() (returns reply, session); _record() shared decide helper; intents sync/listen/status/wa_plan added; turn deadline WA_DEADLINE_S=1500 only when wa_ready()."
+      - "Flow after set_goal: planner week=True cards -> multi-select poll (6 per poll, numbered-text fallback) -> apply approvals -> ONE alternatives round (skipped cards stay pending until it ends, then skip) -> calendar sync (cards executed + calendar_event) -> whatsapp_listen (<=15 min, poll every 20s)."
+      - "Incoming text: only wa_parse() regex + cards.parse_reply, never an LLM (except the user's own /goal, normal set_goal). Text with [SB- ignored; session.wa_cursor {marker, handled} prevents re-processing; _WA counts sends (cap 8 per phase). WhatsApp decisions never launch browser briefs."
+      - "recap.build: 'Done for you' section (calendar_created, wa_confirm, wa_cmds) + compact=True for WhatsApp."
+    stubbed: "week planner + briefs.calendar_events + aside functions are agent A's; not run against real WhatsApp/Calendar. /gym maps to a 'worked out gym X' health text."
+
+  N_demo_tasks:
+    owner: subagent N
+    scope: second_brain/executor/aside.py, scripts/smoke_demo_tasks.py
+    status: done (smoke_demo_tasks, smoke_aside_tasks, smoke_hub, flwr build pass)
+    decisions:
+      - "aside.task(text, timeout=300, runner=None) runs `aside exec <text+RULES>` (user-approved, no SAFETY suffix, not counted in send cap; logs only latency/rc/out_len). '' on failure, partial output on rc -1."
+      - "aside.result_lines(out)/result_line(out): text after LAST 'RESULT:', bullets/vote counts stripped, <=30 lines x 200 chars. Output is untrusted; callers must _q it."
+      - "Caveat: _exec clean() truncates output at 4000 chars, so a very long transcript could lose its trailing RESULT:."
+
+  O_demo_flow:
+    owner: subagent O
+    scope: second_brain/{agent_app,recap}.py, scripts/smoke_demo_flow.py
+    status: done (smoke_demo_flow + all smokes pass)
+    decisions:
+      - "Intent `demo` (/demo) sequences five aside.task calls: WhatsApp poll -> register events -> Google Calendar -> Substack draft (posted only if the user's own WhatsApp reply is 'post', one edit round) -> WhatsApp summary. Python never sends incoming text to an LLM except step 4's draft (router 'write', delimited data)."
+      - "Auto-runs after set_goal only when _aside() has task, `aside` is on PATH, WHATSAPP_TO and CALENDAR_ACCOUNT are set (else old _wa_goal_flow unchanged); turn deadline 45 min. Dry mode (Hub, no aside/env) prints the five task texts with <CALENDAR_ACCOUNT> placeholder."
+      - "session['demo'] = {registered, calendar, post_url, steps}; recap.done_for_you shows registered events, calendar blocks, post url."
+    stubbed: "Never run against real WhatsApp/Calendar/Substack; aside.task/result_lines/_q are agent A's; step 3 builds its own calendar task (does not use aside.calendar_create)."
+
 changelog:
   - "2026-09-29 F_local_run: scripts/run_local.py (REPL/--once/--embed), local/discovery.py, aside.py adapted to real CLI."
   - "2026-09-29 e17374a scaffold pushed (Flower AgentApp at repo root, Hub-valid pyproject)."
@@ -145,3 +195,8 @@ changelog:
   - "2026-09-29 G_hub_webfetch: web_fetch-only event discovery, local discovery hook, set_goal <=2 parallel LLM calls, scripts/smoke_hub.py."
   - "2026-09-29 H_agent_gaps: probe syntax fix, decide guards, health lighter-plan card, content post-about, model: line, smoke_agents extended."
   - "2026-09-29 I_providers: kimi/minimax (Nebius Responses API) added to router chains, LAST_PROVIDER/PROVIDERS_USED, key redaction, chain smokes."
+  - "2026-09-29 K_aside_tasks: WhatsApp send/wait/poll + Google Calendar via aside exec, briefs.calendar_events, planner week mode, scripts/smoke_aside_tasks.py."
+  - "2026-09-29 J_verifier: series-keyed state fallback, events intent fix, live local + SuperGrid pass."
+  - "2026-09-29 L_whatsapp_loop: local WhatsApp poll/confirm/alternatives/calendar-sync/listen loop in agent_app, recap 'Done for you', smoke_local fake-aside test."
+  - "2026-09-29 N_demo_tasks: aside.task/result_lines/result_line (user-approved demo tasks with RULES), scripts/smoke_demo_tasks.py."
+  - "2026-09-29 O_demo_flow: /demo five-step Aside flow (poll, register, calendar, Substack, summary) + dry mode, recap demo block, scripts/smoke_demo_flow.py."
