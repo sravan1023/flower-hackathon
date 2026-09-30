@@ -41,6 +41,10 @@ Every agent message ends with a marker `[SB-xxxx]`; anything in the chat without
 | `/slept 5h`, `/gym 7am` | health agent adapts the plan |
 | `/recap`, `/status`, `/stop` | recap, card states, stop listening |
 
+**One tab, one chat.** The first Aside task starts a session; every later step (WhatsApp, Calendar, Luma, Substack) resumes that same session (`aside session resume <id>`), so the whole run happens in a single tab. A lock file (`data/aside.lock`) refuses a second concurrent Aside task, and a timed-out task stops the session it started.
+
+**Feedback through the local agent.** Anything you type in chat, or send on WhatsApp without a slash command, is treated as feedback ("move the lab to Friday 10am", "skip gym", "also RSVP for the meetup"). The local model turns it into a small JSON edit list that is validated against an allow-list (approve / skip / move / note, plus suggested follow-up actions). Moved slots go back to pending and follow-ups become new cards, so nothing runs without your approval.
+
 Calendar events are reversible and each was approved individually, so Aside saves them; RSVPs and posts still stop before the final click. At most 8 WhatsApp messages are sent per run.
 
 ## Install and build

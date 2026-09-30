@@ -200,3 +200,6 @@ changelog:
   - "2026-09-29 L_whatsapp_loop: local WhatsApp poll/confirm/alternatives/calendar-sync/listen loop in agent_app, recap 'Done for you', smoke_local fake-aside test."
   - "2026-09-29 N_demo_tasks: aside.task/result_lines/result_line (user-approved demo tasks with RULES), scripts/smoke_demo_tasks.py."
   - "2026-09-29 O_demo_flow: /demo five-step Aside flow (poll, register, calendar, Substack, summary) + dry mode, recap demo block, scripts/smoke_demo_flow.py."
+  - "2026-09-29 single-tab Aside: first task = aside exec (session id remembered), all later tasks = aside session resume <id>; single-flight lock file data/aside.lock; timeout stops the new session; empty-marker guard. Found+stopped a stray run_local from a killed agent that was opening a chat every 20s."
+  - "2026-09-29 feedback.py: free-text feedback (chat or WhatsApp read via Aside) -> local model -> JSON validated against an allow-list (approve/skip/move/note + needed_actions) -> moved slots go back to pending, needed actions become pending cards; nothing executes without approval. Unmatched WhatsApp text now goes to feedback instead of the help line (deliberate change to the earlier never-to-an-LLM rule; output is schema-validated and side-effect free). UNTESTED live: `aside session resume <id> <prompt>` non-interactive behaviour (fallback to a new exec if it fails)."
+

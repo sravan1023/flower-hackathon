@@ -14,6 +14,7 @@ from flwr.agentapp import AgentApp, AgentSession
 from flwr.app import Context
 
 from . import cards as cardlib
+from . import feedback as feedbacklib
 from . import goal_engine, recap as recaplib, router, runtime
 from .agents import content as content_agent
 from .agents import events as events_agent
@@ -95,13 +96,13 @@ def intent(text: str, session: dict) -> str:
             return "events"
         if re.search(r"\brecap\b|\bsummary\b", t):
             return "recap"
-    if re.search(r"\bgoal\b|\bi want to\b|\bland\b", t) or not session.get("goal"):
+    if not session.get("goal"):
         return "set_goal"
     if re.search(r"\bevents?\b|\bmeetups?\b|\bfind\b", t):
         return "events"
     if re.search(r"\brecap\b|\bsummary\b", t):
         return "recap"
-    return "other"
+    return "feedback" if len(t.strip()) > 2 else "other"
 
 
 def _next_id(session: dict) -> int:
@@ -263,6 +264,9 @@ def _dispatch(agent: AgentSession, context: Context, text: str, session: dict, p
         new = events_agent.run(agent, session, profile, start_id=_next_id(session))
         session["cards"] += new
         reply = "Ranked events for your goal:\n\n" + cardlib.render(new)
+    elif kind == "feedback":
+        reply = feedbacklib.turn(text, session, profile)
+        runtime.save_profile(profile)
     elif kind == "recap":
         reply = recaplib.build(session, profile)
     else:
@@ -938,8 +942,16 @@ def whatsapp_listen(agent: Any, context: Context, session: dict, profile: dict, 
             cmd = wa_parse(text)
             handled += 1
             if cmd is None:
-                runtime.log({"task": "whatsapp_cmd", "command": "unmatched"})
-                wa.send(HELP_LINE)
+                runtime.log({"task": "whatsapp_cmd", "command": "feedback"})
+                try:
+                    reply = feedbacklib.turn(text, session, profile)
+                    runtime.save_profile(profile)
+                except Exception as e:  # noqa: BLE001
+                    runtime.log({"task": "feedback", "error": type(e).__name__})
+                    reply = HELP_LINE
+                runtime.save_state(context, "session", session)
+                if wa.send(reply) is None and wa.room() == 0:
+                    break
                 continue
             name, mapped = cmd
             runtime.log({"task": "whatsapp_cmd", "command": name})

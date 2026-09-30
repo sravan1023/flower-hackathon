@@ -198,14 +198,14 @@ recap_sent = next(s for s in sent if s.startswith("Recap"))
 assert "Done for you" in recap_sent and "Confirmed over WhatsApp: 3 approved, 1 changed" in recap_sent, recap_sent
 full = recaplib.build(sess, runtime.load_profile())
 assert "Done for you" in full and "Calendar event: Deep work" in full and "/status x1" in full, full
-assert any(s.startswith("Commands: /goal") for s in sent), sent  # unmatched text -> help once
+assert any(s.startswith("Commands: /goal") or "could not map" in s for s in sent), sent  # unmatched text -> feedback turn (help line only if that fails)
 assert sent[-1].startswith("Stopped listening") and not queue, (sent[-1], queue)
 assert not any("injected" in s for s in sent) and "[SB-9999]" not in str(sess.get("wa_cmds")), sent
 assert sess["wa_cmds"] == ["/status", "/recap", "/stop"], sess["wa_cmds"]
 _txt = "".join(e.get("delta", "") for e in ag.events.out)
 assert "Aside is adding 3 events" in _txt and "CREATED: Deep work" in _txt, _txt[-300:]
 log = [__import__("json").loads(x) for x in (runtime.data_dir() / "run_log.jsonl").read_text(encoding="utf-8").splitlines()]
-assert {e.get("command") for e in log if e.get("task") == "whatsapp_cmd"} >= {"/status", "/recap", "/stop", "unmatched"}
+assert {e.get("command") for e in log if e.get("task") == "whatsapp_cmd"} >= {"/status", "/recap", "/stop", "feedback"}
 assert [e["round"] for e in log if e.get("task") == "whatsapp_confirm"] == [1, 2]
 assert any(e.get("task") == "calendar_sync" and e["events"] == 2 for e in log)
 print("whatsapp loop OK")

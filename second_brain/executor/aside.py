@@ -82,7 +82,8 @@ def _stop_session(output: str) -> None:
 
 def _default_runner(argv: list[str], timeout: int) -> tuple[int, str]:
     # Popen + reader thread so partial output (holds the session id needed for steer/stop) survives a timeout.
-    is_exec = argv[:2] == ["aside", "exec"]
+    is_exec = argv[:2] == ["aside", "exec"] or argv[:3] == ["aside", "session", "resume"]
+    creates = argv[:2] == ["aside", "exec"]  # only a NEW session is stopped on timeout; a resumed one is the shared tab
     if is_exec and not _acquire_lock(timeout):
         return -3, "another aside task is running"
     try:
@@ -101,7 +102,7 @@ def _default_runner(argv: list[str], timeout: int) -> tuple[int, str]:
             p.kill()
             t.join(2)
             out = "".join(chunks)
-            if is_exec:
+            if creates:
                 _stop_session(out)
             return -1, out or "timeout"
         t.join(5)
@@ -220,11 +221,48 @@ def _q(s: Any, n: int = 500) -> str:
     return s.replace("\\", "/").replace('"', "'").replace("`", "'")
 
 
+
+# ---------------------------------------------------------------------------------------------
+# ONE Aside session (one tab) per run: the first task is `aside exec` (its session id is remembered); every
+# later task is `aside session resume <id> "<task>"`, so WhatsApp, Calendar, Luma and Substack all happen in the
+# same chat instead of opening a new chat per task. Tests inject a runner and keep the plain exec behaviour.
+# ---------------------------------------------------------------------------------------------
+_SID: str | None = None
+
+
+def current_session() -> str | None:
+    return _SID
+
+
+def reset_session() -> None:
+    global _SID
+    _SID = None
+
+
+def _run_one(task_text: str, timeout: int, runner: Runner | None) -> tuple[int, str]:
+    global _SID
+    if runner is not None:
+        return runner(["aside", "exec", task_text], timeout)
+    if _SID:
+        rc, out = _default_runner(["aside", "session", "resume", _SID, task_text], timeout)
+        lost = rc not in (0, -1, -3) and re.search(r"not found|no such session|unknown session", clean(out, 2000), re.I)
+        if not lost:
+            return rc, out
+        runtime.log({"task": "aside_session", "error": "shared session lost; starting a new one"})
+        _SID = None
+    rc, out = _default_runner(["aside", "exec", task_text], timeout)
+    sid = parse_session_id(clean(out, 100000))
+    if sid:
+        _SID = sid
+        runtime.log({"task": "aside_session", "event": "shared session started"})
+    return rc, out
+
+
 def _exec(name: str, task: str, timeout: int, runner: Runner | None) -> tuple[int, str]:
     """One `aside exec`; never raises; logs only {task, latency, rc} (task text may hold phone/email)."""
     t0 = time.time()
     try:
-        rc, out = (runner or _default_runner)(["aside", "exec", task], timeout)
+        rc, out = _run_one(task, timeout, runner)
     except subprocess.TimeoutExpired:
         rc, out = -1, "timeout"
     except Exception as e:  # noqa: BLE001
@@ -388,7 +426,7 @@ def _exec_tail(name: str, task_text: str, timeout: int, runner: Runner | None) -
     """Like _exec but keeps the TAIL (up to DEMO_MAX_OUT chars) so a trailing RESULT: survives; logs only {task, latency, rc, out_len}."""
     t0 = time.time()
     try:
-        rc, out = (runner or _default_runner)(["aside", "exec", task_text], timeout)
+        rc, out = _run_one(task_text, timeout, runner)
     except subprocess.TimeoutExpired:
         rc, out = -1, "timeout"
     except Exception as e:  # noqa: BLE001
